@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101416">
+    <title>LUT Manager</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="library-panel" aria-label="LUT library">
+        <div class="brand">
+          <div class="brand-mark">LM</div>
+          <div>
+            <h1>LUT Manager</h1>
+            <p>Camera LUT Studio</p>
+          </div>
+        </div>
+
+        <label class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" placeholder="搜索 LUT、相机、作者">
+        </label>
+
+        <div class="category-strip" id="categoryStrip" aria-label="Style filters"></div>
+
+        <div class="library-header">
+          <span>我的 LUT</span>
+          <button class="icon-button" id="addDemoButton" title="加入示例 LUT" aria-label="加入示例 LUT">+</button>
+        </div>
+        <div class="lut-list" id="lutList"></div>
+
+        <div class="sync-card">
+          <div>
+            <strong>同步策略</strong>
+            <p id="syncStatus">使用云盘文件夹 + JSON sidecar，不修改原始 LUT。</p>
+          </div>
+          <div class="sync-actions">
+            <button class="secondary" id="pickFolderButton">选择同步文件夹</button>
+            <button class="secondary" id="exportMetadataButton">导出 JSON</button>
+            <label class="secondary file-trigger">
+              导入 JSON
+              <input id="metadataInput" type="file" accept="application/json,.json">
+            </label>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Preview Lab</p>
+            <h2 id="activeTitle">选择一个 LUT</h2>
+          </div>
+          <div class="topbar-actions">
+            <label class="primary file-trigger">
+              载入参考照片
+              <input id="photoInput" type="file" accept="image/*">
+            </label>
+            <label class="secondary file-trigger">
+              导入 .cube
+              <input id="cubeInput" type="file" accept=".cube,text/plain">
+            </label>
+            <button class="secondary" id="resetPhotoButton">重置参考图</button>
+          </div>
+        </header>
+
+        <section class="preview-stage" aria-label="Before and after preview">
+          <div class="preview-toolbar">
+            <div class="mode-tabs" role="tablist" aria-label="Preview mode">
+              <button class="tab active" data-tab="preview">预览</button>
+              <button class="tab" data-tab="metadata">元数据</button>
+              <button class="tab" data-tab="maker">生成 LUT</button>
+            </div>
+            <div class="preview-readout">
+              <span id="previewCamera">-</span>
+              <span id="previewStyle">-</span>
+            </div>
+          </div>
+
+          <div class="canvas-frame">
+            <canvas id="previewCanvas" width="1200" height="760"></canvas>
+            <input id="splitSlider" class="split-slider" type="range" min="0" max="100" value="50" aria-label="Before after split">
+          </div>
+        </section>
+      </main>
+
+      <aside class="inspector">
+        <section class="panel-section" data-panel="preview">
+          <div class="metric-grid">
+            <div>
+              <span>类别</span>
+              <strong id="detailCategory">-</strong>
+            </div>
+            <div>
+              <span>作者</span>
+              <strong id="detailAuthor">-</strong>
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <span>适配相机</span>
+            <p id="detailCameras">-</p>
+          </div>
+          <div class="detail-block">
+            <span>颜色风格</span>
+            <p id="detailColorStyle">-</p>
+          </div>
+          <div class="tag-cloud" id="detailTags"></div>
+          <div class="detail-block">
+            <span>备注</span>
+            <p id="detailNotes">-</p>
+          </div>
+        </section>
+
+        <section class="panel-section hidden" data-panel="metadata">
+          <div class="section-title">
+            <h3>Sidecar JSON</h3>
+            <button class="secondary small" id="copyRecordButton">复制</button>
+          </div>
+          <textarea id="metadataEditor" spellcheck="false"></textarea>
+          <button class="primary wide" id="saveMetadataButton">保存元数据到库</button>
+        </section>
+
+        <section class="panel-section hidden" data-panel="maker">
+          <div class="section-title">
+            <h3>自定义 LUT</h3>
+            <button class="secondary small" id="resetTuningButton">重置</button>
+          </div>
+
+          <div class="slider-stack" id="tuningControls"></div>
+
+          <label class="field">
+            <span>LUT 名称</span>
+            <input id="newLutName" type="text" value="My HSL Look">
+          </label>
+
+          <label class="field">
+            <span>适配相机</span>
+            <input id="newLutCamera" type="text" value="Sony FX3 / S-Log3">
+          </label>
+
+          <div class="maker-actions">
+            <button class="primary" id="addGeneratedButton">加入库</button>
+            <button class="secondary" id="downloadCubeButton">导出 .cube</button>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

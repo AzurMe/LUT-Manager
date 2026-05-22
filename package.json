@@ -1,0 +1,17 @@
+{
+  "name": "lut-manager-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A zero-dependency LUT Manager prototype for camera LUT cataloging, preview, metadata, and LUT creation.",
+  "scripts": {
+    "dev": "node server.mjs"
+  },
+  "keywords": [
+    "lut",
+    "camera",
+    "color",
+    "pwa"
+  ],
+  "author": "",
+  "license": "UNLICENSED"
+}

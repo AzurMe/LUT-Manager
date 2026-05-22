@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lut-manager.local/schemas/lut-record.schema.json",
+  "title": "LUT Manager Record",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "fileName",
+    "category",
+    "cameraCompatibility",
+    "author",
+    "colorStyle",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable UUID or app-generated id."
+    },
+    "name": {
+      "type": "string"
+    },
+    "fileName": {
+      "type": "string",
+      "description": "Original LUT file name. The LUT file itself is not modified."
+    },
+    "fileHash": {
+      "type": "string",
+      "description": "Optional hash for duplicate detection."
+    },
+    "category": {
+      "type": "string",
+      "examples": [
+        "复古",
+        "清新",
+        "Log矫正"
+      ]
+    },
+    "cameraCompatibility": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "brand",
+          "models"
+        ],
+        "properties": {
+          "brand": {
+            "type": "string"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "profile": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "author": {
+      "type": "string"
+    },
+    "colorStyle": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "description": "Typed tags are preferred. Plain strings are kept for backward compatibility with early prototypes.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "value"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "cameraCategory",
+                  "cameraBrand",
+                  "cameraModel",
+                  "captureProfile",
+                  "function",
+                  "style",
+                  "shadowTone",
+                  "highlightTone",
+                  "colorBias",
+                  "skinTone",
+                  "lightingScene",
+                  "workflow",
+                  "intensity",
+                  "author"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "notes": {
+      "type": "string"
+    },
+    "cloud": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "examples": [
+            "iCloud Drive",
+            "OneDrive",
+            "Dropbox",
+            "Local Folder"
+          ]
+        },
+        "relativePath": {
+          "type": "string"
+        },
+        "lastSyncedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "previewTuning": {
+      "type": "object",
+      "properties": {
+        "exposure": {
+          "type": "number"
+        },
+        "contrast": {
+          "type": "number"
+        },
+        "saturation": {
+          "type": "number"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "tint": {
+          "type": "number"
+        },
+        "hueShift": {
+          "type": "number"
+        }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

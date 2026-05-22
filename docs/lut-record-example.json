@@ -1,0 +1,61 @@
+{
+  "id": "lut_fuji_eterna_soft_001",
+  "name": "Eterna Soft Contrast",
+  "fileName": "Eterna_Soft_Contrast.cube",
+  "fileHash": "sha256-placeholder",
+  "category": "Log矫正",
+  "cameraCompatibility": [
+    {
+      "brand": "Fujifilm",
+      "models": [
+        "X-H2S",
+        "X-T5"
+      ],
+      "profile": "F-Log2"
+    }
+  ],
+  "author": "LUT Manager Demo",
+  "colorStyle": "柔和高光、低对比、胶片肤色",
+  "tags": [
+    {
+      "type": "cameraBrand",
+      "value": "Fujifilm"
+    },
+    {
+      "type": "captureProfile",
+      "value": "F-Log2"
+    },
+    {
+      "type": "function",
+      "value": "Log矫正"
+    },
+    {
+      "type": "style",
+      "value": "电影感"
+    },
+    {
+      "type": "highlightTone",
+      "value": "柔和高光"
+    },
+    {
+      "type": "skinTone",
+      "value": "肤色保护"
+    }
+  ],
+  "notes": "适合日间室外和采访素材。原始 LUT 文件保持只读，所有描述信息都保存在这个 JSON sidecar 中。",
+  "cloud": {
+    "provider": "iCloud Drive",
+    "relativePath": "LUT Manager/Fujifilm/Eterna_Soft_Contrast.cube",
+    "lastSyncedAt": "2026-05-22T00:00:00Z"
+  },
+  "previewTuning": {
+    "exposure": 0,
+    "contrast": -6,
+    "saturation": 8,
+    "temperature": 2,
+    "tint": 1,
+    "hueShift": 0
+  },
+  "createdAt": "2026-05-22T00:00:00Z",
+  "updatedAt": "2026-05-22T00:00:00Z"
+}

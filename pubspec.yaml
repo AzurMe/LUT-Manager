@@ -1,0 +1,19 @@
+name: lut_manager
+description: A cross-platform Flutter app for organizing, previewing, tagging, and creating camera LUTs.
+publish_to: "none"
+version: 0.2.0+2
+
+environment:
+  sdk: ">=3.9.0 <4.0.0"
+
+dependencies:
+  file_selector: ^1.1.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

@@ -4,6 +4,7 @@
 .flutter-plugins-dependencies
 .packages
 build/
+.lut_manager_build
 
 # IDE
 .idea/

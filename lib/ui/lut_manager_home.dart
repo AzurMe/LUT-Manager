@@ -8,6 +8,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../data/camera_tag_catalog.dart';
 import '../data/sample_luts.dart';
 import '../models/look_adjustment.dart';
 import '../models/lut_record.dart';
@@ -158,6 +159,9 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     final grouped = LinkedHashMap<LutTagType, LinkedHashMap<String, LutTag>>();
     for (final type in LutTagType.values) {
       grouped[type] = LinkedHashMap<String, LutTag>();
+    }
+    for (final tag in cameraTagCatalog) {
+      grouped[tag.type]?[tag.key] = tag;
     }
     for (final record in _records) {
       for (final tag in record.tags) {
@@ -1468,33 +1472,51 @@ class _TagGroup extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final selectedCount = tags
+        .where((tag) => selectedTagKeys.contains(tag.key))
+        .length;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        child: ExpansionTile(
+          key: PageStorageKey('tag-group-${type.name}-$selectedCount'),
+          initiallyExpanded: selectedCount > 0,
+          leading: Icon(_tagIcon(type), size: 18),
+          title: Text(
             type.label,
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w700,
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w800,
             ),
           ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final tag in tags)
-                FilterChip(
-                  label: Text(tag.value),
-                  selected: selectedTagKeys.contains(tag.key),
-                  avatar: Icon(_tagIcon(type), size: 16),
-                  onSelected: (_) => onToggleTag(tag),
-                ),
-            ],
+          subtitle: Text(
+            selectedCount == 0
+                ? '${tags.length} 个可选 Tag'
+                : '已选 $selectedCount / ${tags.length}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
-        ],
+          childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final tag in tags)
+                    FilterChip(
+                      label: Text(tag.value),
+                      selected: selectedTagKeys.contains(tag.key),
+                      avatar: Icon(_tagIcon(type), size: 16),
+                      onSelected: (_) => onToggleTag(tag),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2485,35 +2507,39 @@ class _AdjustmentSlider extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 72,
-                child: Text(
-                  label,
-                  style: Theme.of(context).textTheme.labelLarge,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onDoubleTap: () => onChanged(0),
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 72,
+                  child: Text(
+                    label,
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
                 ),
-              ),
-              Expanded(
-                child: Slider(
-                  min: -1,
-                  max: 1,
-                  value: value,
-                  onChanged: onChanged,
+                Expanded(
+                  child: Slider(
+                    min: -1,
+                    max: 1,
+                    value: value,
+                    onChanged: onChanged,
+                  ),
                 ),
-              ),
-              SizedBox(
-                width: 48,
-                child: Text(
-                  '${(value * 100).round()}',
-                  textAlign: TextAlign.end,
-                  style: Theme.of(context).textTheme.labelMedium,
+                SizedBox(
+                  width: 48,
+                  child: Text(
+                    '${(value * 100).round()}',
+                    textAlign: TextAlign.end,
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

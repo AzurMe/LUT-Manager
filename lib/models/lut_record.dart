@@ -110,7 +110,16 @@ class LutRecord {
 
   bool matchesTags(Set<String> selectedTagKeys) {
     if (selectedTagKeys.isEmpty) return true;
-    final ownKeys = tags.map((tag) => tag.key).toSet();
+    final ownKeys = {
+      for (final tag in tags) tag.key,
+      for (final camera in cameraCompatibility) ...[
+        LutTag(type: LutTagType.cameraBrand, value: camera.brand).key,
+        LutTag(type: LutTagType.cameraCategory, value: camera.category).key,
+        LutTag(type: LutTagType.captureProfile, value: camera.profile).key,
+        for (final model in camera.models)
+          LutTag(type: LutTagType.cameraModel, value: model).key,
+      ],
+    };
     return selectedTagKeys.every(ownKeys.contains);
   }
 

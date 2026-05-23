@@ -94,6 +94,8 @@ Duplicate detection fields are stored with each record:
 - `docs/metadata-schema.json` - sidecar schema draft
 - `docs/lut-record-example.json` - example record
 - `docs/tag-taxonomy.md` - typed tag taxonomy
+- `docs/project-root-guide.md` - root files and Flutter build output guide
+- `docs/camera-tag-catalog.md` - camera brand/model Tag catalog sources
 
 ## Planned Native Modules
 

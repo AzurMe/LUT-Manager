@@ -16,9 +16,13 @@ Implemented in `lib/`:
 - Before/After preview canvas using a generated reference frame.
 - Native file dialogs via Flutter's `file_selector` package.
 - Reference image loading for preview comparison.
-- `.cube` file import with 3D LUT validation.
+- `.cube` file import with 3D LUT validation and real LUT application on reference photos.
+- Duplicate LUT detection using exact file SHA-256 and normalized LUT content SHA-256.
 - `.cube` export through native save dialogs.
-- Metadata JSON import/export for sync-folder workflows.
+- Automatic local library persistence between launches.
+- Sync-folder `.lutmanager.json` sidecar generation and reading.
+- Editable metadata and typed Tag UI, plus raw sidecar JSON editing.
+- Metadata JSON import/export for manual bundle workflows.
 - HSL-style custom LUT controls.
 - Generated `.cube` text copy and custom LUT creation inside the in-memory library.
 
@@ -68,6 +72,24 @@ http://127.0.0.1:4173
 ## Metadata
 
 LUT Manager stores metadata as JSON sidecar records so original LUT files remain untouched.
+The app writes a local `lut-manager-library.json` in the platform application support directory. When a sync folder is selected, it also writes and reads `.lutmanager.json` in that folder:
+
+```json
+{
+  "app": "LUT Manager",
+  "schemaVersion": 3,
+  "updatedAt": "2026-05-23T00:00:00.000",
+  "syncFolderPath": "/path/to/LUTs",
+  "luts": []
+}
+```
+
+Duplicate detection fields are stored with each record:
+
+- `fileHash` - SHA-256 of the exact file bytes.
+- `contentHash` - SHA-256 of normalized LUT numeric data, ignoring comments/title/whitespace.
+- `lutSize` - 3D LUT cube dimension.
+- `sourceFileSize` - original file size in bytes.
 
 - `docs/metadata-schema.json` - sidecar schema draft
 - `docs/lut-record-example.json` - example record
@@ -75,8 +97,6 @@ LUT Manager stores metadata as JSON sidecar records so original LUT files remain
 
 ## Planned Native Modules
 
-- Apply imported 3D LUT data directly to reference photos.
-- Persist metadata automatically between launches.
-- Persistent local database for metadata and recent reference images.
-- Hash-based duplicate detection.
+- Persistent recent reference-image history.
+- Batch folder import and folder watching.
 - Native export panel for `.cube`, `.3dl`, and app metadata bundles.

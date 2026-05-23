@@ -1,8 +1,9 @@
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,9 +13,20 @@ import '../models/look_adjustment.dart';
 import '../models/lut_record.dart';
 import '../models/lut_tag.dart';
 import '../services/cube_lut.dart';
+import '../services/lut_image_processor.dart';
+import '../services/lut_library_repository.dart';
 import '../theme/codex_theme.dart';
 
 enum WorkspacePanel { preview, metadata, maker }
+
+enum DuplicateKind { file, content }
+
+class _DuplicateMatch {
+  const _DuplicateMatch({required this.kind, required this.existingRecord});
+
+  final DuplicateKind kind;
+  final LutRecord existingRecord;
+}
 
 class LutManagerHome extends StatefulWidget {
   const LutManagerHome({
@@ -31,6 +43,9 @@ class LutManagerHome extends StatefulWidget {
 }
 
 class _LutManagerHomeState extends State<LutManagerHome> {
+  final LutLibraryRepository _repository = LutLibraryRepository();
+  final LutImageProcessor _imageProcessor = const LutImageProcessor();
+  final Map<String, CubeLut> _cubeCache = <String, CubeLut>{};
   late final TextEditingController _searchController;
   late List<LutRecord> _records;
   late String _selectedId;
@@ -45,7 +60,11 @@ class _LutManagerHomeState extends State<LutManagerHome> {
   String _makerName = 'My HSL Look';
   String _makerCamera = 'Sony FX3 / S-Log3';
   String _syncFolderLabel = '尚未选择同步文件夹';
+  String? _syncFolderPath;
   Uint8List? _referenceImageBytes;
+  Uint8List? _gradedReferenceImageBytes;
+  String? _gradedRecordId;
+  bool _isProcessingPreview = false;
 
   @override
   void initState() {
@@ -53,12 +72,72 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     _records = List<LutRecord>.from(sampleLuts);
     _selectedId = _records.first.id;
     _searchController = TextEditingController();
+    _loadLibraryState();
   }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadLibraryState() async {
+    final state = await _repository.loadLibraryState();
+    if (!mounted) return;
+    setState(() {
+      _records = state.records;
+      _selectedId = _records.isEmpty ? '' : _records.first.id;
+      _syncFolderPath = state.syncFolderPath;
+      _syncFolderLabel = state.syncFolderPath == null
+          ? '尚未选择同步文件夹'
+          : '${state.syncFolderPath}\nsidecar: ${LutLibraryRepository.sidecarFileName}';
+    });
+    await _readSyncSidecarIfAvailable();
+    await _refreshCubePreview();
+  }
+
+  Future<void> _persistLibraryState() async {
+    await _repository.saveLibraryState(
+      LutLibraryState(records: _records, syncFolderPath: _syncFolderPath),
+    );
+    final folderPath = _syncFolderPath;
+    if (folderPath != null && folderPath.isNotEmpty) {
+      await _repository.saveSidecar(folderPath, _records);
+    }
+  }
+
+  Future<void> _readSyncSidecarIfAvailable() async {
+    final folderPath = _syncFolderPath;
+    if (folderPath == null || folderPath.isEmpty) return;
+    try {
+      final sidecarRecords = await _repository.loadSidecar(folderPath);
+      if (sidecarRecords.isEmpty) {
+        await _repository.saveSidecar(folderPath, _records);
+        return;
+      }
+      _mergeRecords(sidecarRecords);
+      await _persistLibraryState();
+    } catch (_) {
+      _showMessage('同步文件夹 sidecar 读取失败，将继续使用本地库');
+    }
+  }
+
+  void _mergeRecords(List<LutRecord> incomingRecords) {
+    final byId = {for (final record in _records) record.id: record};
+    for (final incoming in incomingRecords) {
+      final current = byId[incoming.id];
+      if (current == null || incoming.updatedAt.isAfter(current.updatedAt)) {
+        byId[incoming.id] = incoming;
+      }
+    }
+    setState(() {
+      _records = byId.values.toList()
+        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      if (_records.isNotEmpty &&
+          !_records.any((record) => record.id == _selectedId)) {
+        _selectedId = _records.first.id;
+      }
+    });
   }
 
   LutRecord get _selectedRecord {
@@ -85,9 +164,7 @@ class _LutManagerHomeState extends State<LutManagerHome> {
         grouped[tag.type]?[tag.key] = tag;
       }
     }
-    return grouped.map(
-      (type, tags) => MapEntry(type, tags.values.toList()),
-    );
+    return grouped.map((type, tags) => MapEntry(type, tags.values.toList()));
   }
 
   @override
@@ -125,9 +202,13 @@ class _LutManagerHomeState extends State<LutManagerHome> {
                     split: _split,
                     makerLook: _makerLook,
                     referenceImageBytes: _referenceImageBytes,
+                    gradedReferenceImageBytes: _gradedRecordId == _selectedId
+                        ? _gradedReferenceImageBytes
+                        : null,
+                    isProcessingPreview: _isProcessingPreview,
                     onPickReferenceImage: _pickReferenceImage,
                     onImportCube: _importCubeFile,
-                    onPanelChanged: (panel) => setState(() => _panel = panel),
+                    onPanelChanged: _setPanel,
                     onSplitChanged: (value) => setState(() => _split = value),
                   ),
                 ),
@@ -139,13 +220,16 @@ class _LutManagerHomeState extends State<LutManagerHome> {
                     makerLook: _makerLook,
                     makerName: _makerName,
                     makerCamera: _makerCamera,
-                    onMakerLookChanged: (look) => setState(() => _makerLook = look),
+                    onMakerLookChanged: (look) =>
+                        setState(() => _makerLook = look),
                     onMakerNameChanged: (value) => _makerName = value,
                     onMakerCameraChanged: (value) => _makerCamera = value,
                     onAddGenerated: _addGeneratedLut,
                     onCopyCube: _copyGeneratedCube,
                     onSaveCube: _saveGeneratedCube,
                     onCopyMetadata: _copyMetadata,
+                    onSaveMetadataJson: _saveSelectedMetadataJson,
+                    onEditMetadata: _editSelectedMetadata,
                   ),
                 ),
               ],
@@ -184,9 +268,13 @@ class _LutManagerHomeState extends State<LutManagerHome> {
                       split: _split,
                       makerLook: _makerLook,
                       referenceImageBytes: _referenceImageBytes,
+                      gradedReferenceImageBytes: _gradedRecordId == _selectedId
+                          ? _gradedReferenceImageBytes
+                          : null,
+                      isProcessingPreview: _isProcessingPreview,
                       onPickReferenceImage: _pickReferenceImage,
                       onImportCube: _importCubeFile,
-                      onPanelChanged: (panel) => setState(() => _panel = panel),
+                      onPanelChanged: _setPanel,
                       onSplitChanged: (value) => setState(() => _split = value),
                     ),
                   ),
@@ -198,13 +286,16 @@ class _LutManagerHomeState extends State<LutManagerHome> {
                     makerLook: _makerLook,
                     makerName: _makerName,
                     makerCamera: _makerCamera,
-                    onMakerLookChanged: (look) => setState(() => _makerLook = look),
+                    onMakerLookChanged: (look) =>
+                        setState(() => _makerLook = look),
                     onMakerNameChanged: (value) => _makerName = value,
                     onMakerCameraChanged: (value) => _makerCamera = value,
                     onAddGenerated: _addGeneratedLut,
                     onCopyCube: _copyGeneratedCube,
                     onSaveCube: _saveGeneratedCube,
                     onCopyMetadata: _copyMetadata,
+                    onSaveMetadataJson: _saveSelectedMetadataJson,
+                    onEditMetadata: _editSelectedMetadata,
                     compact: true,
                   ),
                 ),
@@ -235,11 +326,32 @@ class _LutManagerHomeState extends State<LutManagerHome> {
       _selectedId = record.id;
       if (_panel == WorkspacePanel.maker) _panel = WorkspacePanel.preview;
     });
+    _refreshCubePreview();
   }
 
-  void _addGeneratedLut() {
+  void _setPanel(WorkspacePanel panel) {
+    setState(() => _panel = panel);
+    _refreshCubePreview();
+  }
+
+  Future<void> _addGeneratedLut() async {
     final now = DateTime.now();
     final camera = _parseCamera(_makerCamera);
+    final cubeText = _generateCubeText(_makerName, _makerLook);
+    final fileHash = _hashText(cubeText);
+    final contentHash = _hashText(CubeLut.parse(cubeText).normalizedContent);
+    final duplicate = _findDuplicate(
+      fileHash: fileHash,
+      contentHash: contentHash,
+    );
+    if (duplicate != null) {
+      final shouldImport = await _confirmDuplicateImport(duplicate);
+      if (!shouldImport) {
+        _showMessage('已跳过重复 LUT：$_makerName');
+        return;
+      }
+    }
+
     final record = LutRecord(
       id: 'lut_custom_${now.microsecondsSinceEpoch}',
       name: _makerName.trim().isEmpty ? 'My HSL Look' : _makerName.trim(),
@@ -252,12 +364,20 @@ class _LutManagerHomeState extends State<LutManagerHome> {
         LutTag(type: LutTagType.captureProfile, value: camera.profile),
         const LutTag(type: LutTagType.function, value: '创意风格'),
         const LutTag(type: LutTagType.style, value: '自定义'),
-        const LutTag(type: LutTagType.workflow, value: 'Generated in LUT Manager'),
+        const LutTag(
+          type: LutTagType.workflow,
+          value: 'Generated in LUT Manager',
+        ),
       ],
       notes: '由 Flutter 版 HSL 控制生成。下一步接入文件系统后可直接保存 .cube 到同步目录。',
       look: _makerLook,
       cloudProvider: 'Local Folder',
       relativePath: '${_slugify(_makerName)}.cube',
+      fileHash: fileHash,
+      contentHash: contentHash,
+      lutSize: 17,
+      sourceFileSize: utf8.encode(cubeText).length,
+      importedAt: now,
       createdAt: now,
       updatedAt: now,
     );
@@ -267,6 +387,9 @@ class _LutManagerHomeState extends State<LutManagerHome> {
       _selectedId = record.id;
       _panel = WorkspacePanel.preview;
     });
+    _cubeCache[record.id] = CubeLut.parse(cubeText);
+    await _persistLibraryState();
+    await _refreshCubePreview();
     _showMessage('已把自定义 LUT 加入库');
   }
 
@@ -283,7 +406,9 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     if (location == null) return;
 
     final textFile = XFile.fromData(
-      Uint8List.fromList(utf8.encode(_generateCubeText(_makerName, _makerLook))),
+      Uint8List.fromList(
+        utf8.encode(_generateCubeText(_makerName, _makerLook)),
+      ),
       mimeType: 'text/plain',
       name: fileName,
     );
@@ -296,13 +421,18 @@ class _LutManagerHomeState extends State<LutManagerHome> {
       label: 'Reference images',
       extensions: ['jpg', 'jpeg', 'png', 'webp'],
       mimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
-      uniformTypeIdentifiers: ['public.jpeg', 'public.png', 'org.webmproject.webp'],
+      uniformTypeIdentifiers: [
+        'public.jpeg',
+        'public.png',
+        'org.webmproject.webp',
+      ],
     );
     final file = await openFile(acceptedTypeGroups: [imageTypeGroup]);
     if (file == null) return;
 
     final bytes = await file.readAsBytes();
     setState(() => _referenceImageBytes = bytes);
+    await _refreshCubePreview();
     _showMessage('已载入参考照片：${file.name}');
   }
 
@@ -316,7 +446,9 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     final file = await openFile(acceptedTypeGroups: [cubeTypeGroup]);
     if (file == null) return;
 
-    final text = await file.readAsString();
+    final bytes = await file.readAsBytes();
+    final fileHash = _hashBytes(bytes);
+    final text = utf8.decode(bytes, allowMalformed: true);
     final CubeLut cube;
     try {
       cube = CubeLut.parse(text);
@@ -326,6 +458,20 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     }
 
     final now = DateTime.now();
+    final contentHash = _hashText(cube.normalizedContent);
+    final duplicate = _findDuplicate(
+      fileHash: fileHash,
+      contentHash: contentHash,
+    );
+    if (duplicate != null) {
+      if (!mounted) return;
+      final shouldImport = await _confirmDuplicateImport(duplicate);
+      if (!shouldImport) {
+        _showMessage('已跳过重复 LUT：${file.name}');
+        return;
+      }
+    }
+
     final name = cube.title.isEmpty
         ? file.name.replaceAll(RegExp(r'\.cube$', caseSensitive: false), '')
         : cube.title;
@@ -348,10 +494,15 @@ class _LutManagerHomeState extends State<LutManagerHome> {
         LutTag(type: LutTagType.style, value: '未标记'),
         LutTag(type: LutTagType.workflow, value: 'Imported'),
       ],
-      notes: '从 .cube 文件导入。当前版本先记录元数据并校验 LUT 数据，后续会把 3D LUT 实时应用到参考照片。',
+      notes: '从 .cube 文件导入。载入参考照片后会用 3D LUT 生成真实 After 预览。',
       look: LookAdjustment.neutral,
       cloudProvider: 'Local Folder',
       relativePath: file.path,
+      fileHash: fileHash,
+      contentHash: contentHash,
+      lutSize: cube.size,
+      sourceFileSize: bytes.length,
+      importedAt: now,
       createdAt: now,
       updatedAt: now,
     );
@@ -361,7 +512,525 @@ class _LutManagerHomeState extends State<LutManagerHome> {
       _selectedId = record.id;
       _panel = WorkspacePanel.metadata;
     });
+    _cubeCache[record.id] = cube;
+    await _persistLibraryState();
+    await _refreshCubePreview();
     _showMessage('已导入 ${file.name}');
+  }
+
+  String _hashBytes(List<int> bytes) => 'sha256:${sha256.convert(bytes)}';
+
+  String _hashText(String text) => _hashBytes(utf8.encode(text));
+
+  _DuplicateMatch? _findDuplicate({
+    required String fileHash,
+    required String contentHash,
+  }) {
+    for (final record in _records) {
+      if (record.fileHash.isNotEmpty && record.fileHash == fileHash) {
+        return _DuplicateMatch(
+          kind: DuplicateKind.file,
+          existingRecord: record,
+        );
+      }
+    }
+    for (final record in _records) {
+      if (record.contentHash.isNotEmpty && record.contentHash == contentHash) {
+        return _DuplicateMatch(
+          kind: DuplicateKind.content,
+          existingRecord: record,
+        );
+      }
+    }
+    return null;
+  }
+
+  Future<bool> _confirmDuplicateImport(_DuplicateMatch duplicate) async {
+    final kindLabel = duplicate.kind == DuplicateKind.file
+        ? '文件完全相同'
+        : 'LUT 内容相同';
+    final existing = duplicate.existingRecord;
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('检测到重复 LUT'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(kindLabel),
+                  const SizedBox(height: 12),
+                  Text('已存在：${existing.name}'),
+                  Text('文件：${existing.fileName}'),
+                  if (existing.lutSize != null) Text('尺寸：${existing.lutSize}³'),
+                  const SizedBox(height: 12),
+                  const Text('你可以跳过导入，也可以仍然导入为一个副本。'),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('跳过导入'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('仍然导入副本'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
+  Future<CubeLut?> _loadCubeForRecord(LutRecord record) async {
+    final cached = _cubeCache[record.id];
+    if (cached != null) return cached;
+
+    if (record.author == '用户自定义') {
+      final cube = CubeLut.parse(_generateCubeText(record.name, record.look));
+      _cubeCache[record.id] = cube;
+      return cube;
+    }
+
+    final path = _resolveRecordPath(record);
+    if (path.isEmpty) return null;
+    final file = File(path);
+    if (!await file.exists()) return null;
+
+    try {
+      final cube = CubeLut.parse(await file.readAsString());
+      _cubeCache[record.id] = cube;
+      return cube;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _resolveRecordPath(LutRecord record) {
+    final path = record.relativePath.trim();
+    if (path.isEmpty || File(path).isAbsolute) return path;
+    final folderPath = _syncFolderPath;
+    if (folderPath == null || folderPath.isEmpty) return path;
+    final separator = Platform.pathSeparator;
+    final trimmedFolder = folderPath.endsWith(separator)
+        ? folderPath.substring(0, folderPath.length - 1)
+        : folderPath;
+    return '$trimmedFolder$separator$path';
+  }
+
+  Future<void> _refreshCubePreview() async {
+    final sourceBytes = _referenceImageBytes;
+    if (sourceBytes == null ||
+        _records.isEmpty ||
+        _panel == WorkspacePanel.maker) {
+      if (mounted) {
+        setState(() {
+          _gradedReferenceImageBytes = null;
+          _gradedRecordId = null;
+          _isProcessingPreview = false;
+        });
+      }
+      return;
+    }
+
+    final record = _selectedRecord;
+    final cube = await _loadCubeForRecord(record);
+    if (cube == null) {
+      if (mounted) {
+        setState(() {
+          _gradedReferenceImageBytes = null;
+          _gradedRecordId = null;
+          _isProcessingPreview = false;
+        });
+      }
+      return;
+    }
+
+    setState(() => _isProcessingPreview = true);
+    try {
+      final processed = await Future<Uint8List>(
+        () => _imageProcessor.applyCube(sourceBytes: sourceBytes, cube: cube),
+      );
+      if (!mounted || _selectedId != record.id) return;
+      setState(() {
+        _gradedReferenceImageBytes = processed;
+        _gradedRecordId = record.id;
+        _isProcessingPreview = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _gradedReferenceImageBytes = null;
+        _gradedRecordId = null;
+        _isProcessingPreview = false;
+      });
+      _showMessage('参考照片无法应用当前 LUT');
+    }
+  }
+
+  Future<void> _replaceRecord(
+    String oldRecordId,
+    LutRecord updatedRecord,
+  ) async {
+    setState(() {
+      final nextRecords = <LutRecord>[];
+      var replaced = false;
+      for (final record in _records) {
+        if (record.id == oldRecordId) {
+          nextRecords.add(updatedRecord);
+          replaced = true;
+        } else if (record.id != updatedRecord.id) {
+          nextRecords.add(record);
+        }
+      }
+      if (!replaced) nextRecords.insert(0, updatedRecord);
+      _records = nextRecords;
+      _selectedId = updatedRecord.id;
+      _cubeCache
+        ..remove(oldRecordId)
+        ..remove(updatedRecord.id);
+      final activeTagKeys = _records
+          .expand((record) => record.tags)
+          .map((tag) => tag.key)
+          .toSet();
+      _selectedTagKeys.removeWhere((key) => !activeTagKeys.contains(key));
+    });
+    await _persistLibraryState();
+    await _refreshCubePreview();
+  }
+
+  Future<void> _saveSelectedMetadataJson(String rawJson) async {
+    final current = _selectedRecord;
+    try {
+      final decoded = jsonDecode(rawJson);
+      if (decoded is! Map) {
+        throw const FormatException('Metadata root must be an object.');
+      }
+      var updated = LutRecord.fromJson(
+        decoded.map((key, value) => MapEntry(key.toString(), value)),
+      );
+      final createdAt = updated.createdAt.millisecondsSinceEpoch == 0
+          ? current.createdAt
+          : updated.createdAt;
+      updated = updated.copyWith(
+        id: updated.id.isEmpty ? current.id : updated.id,
+        createdAt: createdAt,
+        updatedAt: DateTime.now(),
+      );
+      await _replaceRecord(current.id, updated);
+      _showMessage('元数据 JSON 已保存');
+    } catch (_) {
+      _showMessage('JSON 保存失败，请检查格式和字段类型');
+    }
+  }
+
+  Future<void> _editSelectedMetadata() async {
+    final record = _selectedRecord;
+    final camera = record.cameraCompatibility.isEmpty
+        ? const CameraCompatibility(
+            brand: '通用',
+            models: ['未指定'],
+            profile: '未指定',
+            category: '未指定',
+          )
+        : record.cameraCompatibility.first;
+    final nameController = TextEditingController(text: record.name);
+    final fileNameController = TextEditingController(text: record.fileName);
+    final authorController = TextEditingController(text: record.author);
+    final colorStyleController = TextEditingController(text: record.colorStyle);
+    final notesController = TextEditingController(text: record.notes);
+    final cloudProviderController = TextEditingController(
+      text: record.cloudProvider,
+    );
+    final relativePathController = TextEditingController(
+      text: record.relativePath,
+    );
+    final cameraBrandController = TextEditingController(text: camera.brand);
+    final cameraModelsController = TextEditingController(
+      text: camera.models.join(', '),
+    );
+    final cameraProfileController = TextEditingController(text: camera.profile);
+    final cameraCategoryController = TextEditingController(
+      text: camera.category,
+    );
+    final tagDrafts = record.tags
+        .map((tag) => _EditableTagDraft(type: tag.type, value: tag.value))
+        .toList();
+    if (tagDrafts.isEmpty) {
+      tagDrafts.add(_EditableTagDraft(type: LutTagType.style, value: '未标记'));
+    }
+
+    String read(TextEditingController controller, String fallback) {
+      final value = controller.text.trim();
+      return value.isEmpty ? fallback : value;
+    }
+
+    final updated = await showDialog<LutRecord>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final size = MediaQuery.sizeOf(context);
+            return AlertDialog(
+              title: const Text('编辑元数据与 Tag'),
+              content: SizedBox(
+                width: math.min(680, size.width - 48),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '基础信息',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      _DialogTextField(
+                        controller: nameController,
+                        label: 'LUT 名称',
+                        icon: Icons.drive_file_rename_outline,
+                      ),
+                      const SizedBox(height: 10),
+                      _DialogTextField(
+                        controller: fileNameController,
+                        label: '文件名',
+                        icon: Icons.insert_drive_file_outlined,
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _DialogTextField(
+                              controller: authorController,
+                              label: '作者',
+                              icon: Icons.person_outline,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _DialogTextField(
+                              controller: colorStyleController,
+                              label: '颜色风格',
+                              icon: Icons.palette_outlined,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      _DialogTextField(
+                        controller: notesController,
+                        label: '备注',
+                        icon: Icons.notes_outlined,
+                        minLines: 2,
+                        maxLines: 4,
+                      ),
+                      const SizedBox(height: 18),
+                      Text(
+                        '相机适配',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _DialogTextField(
+                              controller: cameraBrandController,
+                              label: '厂商',
+                              icon: Icons.business_outlined,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _DialogTextField(
+                              controller: cameraModelsController,
+                              label: '机型，逗号分隔',
+                              icon: Icons.photo_camera_outlined,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _DialogTextField(
+                              controller: cameraProfileController,
+                              label: 'Profile',
+                              icon: Icons.tune_outlined,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _DialogTextField(
+                              controller: cameraCategoryController,
+                              label: '相机类别',
+                              icon: Icons.category_outlined,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      Row(
+                        children: [
+                          Text(
+                            'Tags',
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                          const Spacer(),
+                          TextButton.icon(
+                            onPressed: () {
+                              setDialogState(() {
+                                tagDrafts.add(
+                                  _EditableTagDraft(
+                                    type: LutTagType.style,
+                                    value: '',
+                                  ),
+                                );
+                              });
+                            },
+                            icon: const Icon(Icons.add, size: 18),
+                            label: const Text('添加'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      for (
+                        var index = 0;
+                        index < tagDrafts.length;
+                        index++
+                      ) ...[
+                        _TagEditorRow(
+                          draft: tagDrafts[index],
+                          onTypeChanged: (type) {
+                            if (type == null) return;
+                            setDialogState(() => tagDrafts[index].type = type);
+                          },
+                          onDelete: tagDrafts.length == 1
+                              ? null
+                              : () {
+                                  setDialogState(() {
+                                    final removed = tagDrafts.removeAt(index);
+                                    removed.dispose();
+                                  });
+                                },
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      const SizedBox(height: 10),
+                      Text(
+                        '同步位置',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _DialogTextField(
+                              controller: cloudProviderController,
+                              label: '云服务 / 位置',
+                              icon: Icons.cloud_outlined,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _DialogTextField(
+                              controller: relativePathController,
+                              label: '路径',
+                              icon: Icons.folder_outlined,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('取消'),
+                ),
+                FilledButton.icon(
+                  onPressed: () {
+                    final models = cameraModelsController.text
+                        .split(RegExp(r'[,，]'))
+                        .map((model) => model.trim())
+                        .where((model) => model.isNotEmpty)
+                        .toList();
+                    final tags = tagDrafts
+                        .map(
+                          (draft) => LutTag(
+                            type: draft.type,
+                            value: draft.valueController.text.trim(),
+                          ),
+                        )
+                        .where((tag) => tag.value.isNotEmpty)
+                        .toList();
+                    final updatedRecord = record.copyWith(
+                      name: read(nameController, record.name),
+                      fileName: read(fileNameController, record.fileName),
+                      author: read(authorController, '未知作者'),
+                      colorStyle: read(colorStyleController, '未描述'),
+                      notes: notesController.text.trim(),
+                      cameraCompatibility: [
+                        CameraCompatibility(
+                          brand: read(cameraBrandController, '通用'),
+                          models: models.isEmpty ? ['未指定'] : models,
+                          profile: read(cameraProfileController, '未指定'),
+                          category: read(cameraCategoryController, '未指定'),
+                        ),
+                      ],
+                      tags: tags,
+                      cloudProvider: read(
+                        cloudProviderController,
+                        'Local Folder',
+                      ),
+                      relativePath: relativePathController.text.trim(),
+                      updatedAt: DateTime.now(),
+                    );
+                    Navigator.of(context).pop(updatedRecord);
+                  },
+                  icon: const Icon(Icons.check),
+                  label: const Text('保存'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    for (final controller in [
+      nameController,
+      fileNameController,
+      authorController,
+      colorStyleController,
+      notesController,
+      cloudProviderController,
+      relativePathController,
+      cameraBrandController,
+      cameraModelsController,
+      cameraProfileController,
+      cameraCategoryController,
+    ]) {
+      controller.dispose();
+    }
+    for (final draft in tagDrafts) {
+      draft.dispose();
+    }
+
+    if (updated == null) return;
+    await _replaceRecord(record.id, updated);
+    _showMessage('元数据和 Tag 已保存');
   }
 
   Future<void> _copyMetadata() async {
@@ -375,8 +1044,14 @@ class _LutManagerHomeState extends State<LutManagerHome> {
   Future<void> _chooseSyncFolder() async {
     final path = await getDirectoryPath();
     if (path == null) return;
-    setState(() => _syncFolderLabel = path);
-    _showMessage('同步文件夹已选择');
+    setState(() {
+      _syncFolderPath = path;
+      _syncFolderLabel =
+          '$path\nsidecar: ${LutLibraryRepository.sidecarFileName}';
+    });
+    await _readSyncSidecarIfAvailable();
+    await _persistLibraryState();
+    _showMessage('同步文件夹已选择，并已生成/读取 .lutmanager.json');
   }
 
   Future<void> _exportMetadataBundle() async {
@@ -387,7 +1062,7 @@ class _LutManagerHomeState extends State<LutManagerHome> {
 
     final payload = {
       'app': 'LUT Manager',
-      'schemaVersion': 2,
+      'schemaVersion': 3,
       'exportedAt': DateTime.now().toIso8601String(),
       'syncFolder': _syncFolderLabel,
       'luts': _records.map((record) => record.toJson()).toList(),
@@ -413,9 +1088,11 @@ class _LutManagerHomeState extends State<LutManagerHome> {
 
     try {
       final decoded = jsonDecode(await file.readAsString());
-      final rawRecords = decoded is List<Object?>
+      final rawRecords = decoded is List
           ? decoded
-          : (decoded as Map<String, Object?>)['luts'] as List<Object?>;
+          : decoded is Map && decoded['luts'] is List
+          ? decoded['luts'] as List
+          : const <Object?>[];
       final importedRecords = rawRecords
           .whereType<Map<Object?, Object?>>()
           .map(
@@ -438,6 +1115,8 @@ class _LutManagerHomeState extends State<LutManagerHome> {
         _records = byId.values.toList();
         _selectedId = importedRecords.first.id;
       });
+      await _persistLibraryState();
+      await _refreshCubePreview();
       _showMessage('已导入 ${importedRecords.length} 条元数据');
     } catch (_) {
       _showMessage('元数据导入失败，请检查 JSON 格式');
@@ -467,9 +1146,12 @@ class _LutManagerHomeState extends State<LutManagerHome> {
 
   String _summarizeLook(LookAdjustment look) {
     final parts = <String>[];
-    if (look.contrast.abs() > 0.01) parts.add('对比 ${(look.contrast * 100).round()}');
-    if (look.saturation.abs() > 0.01) parts.add('饱和 ${(look.saturation * 100).round()}');
-    if (look.temperature.abs() > 0.01) parts.add('色温 ${(look.temperature * 100).round()}');
+    if (look.contrast.abs() > 0.01)
+      parts.add('对比 ${(look.contrast * 100).round()}');
+    if (look.saturation.abs() > 0.01)
+      parts.add('饱和 ${(look.saturation * 100).round()}');
+    if (look.temperature.abs() > 0.01)
+      parts.add('色温 ${(look.temperature * 100).round()}');
     if (look.highlightRollOff.abs() > 0.01) {
       parts.add('高光保护 ${(look.highlightRollOff * 100).round()}');
     }
@@ -508,9 +1190,9 @@ class _LutManagerHomeState extends State<LutManagerHome> {
   }
 
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -602,7 +1284,11 @@ class _LibraryPane extends StatelessWidget {
               onPressed: () => onThemeModeChanged(
                 themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark,
               ),
-              icon: Icon(themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
+              icon: Icon(
+                themeMode == ThemeMode.dark
+                    ? Icons.light_mode
+                    : Icons.dark_mode,
+              ),
             ),
           ],
         ),
@@ -620,7 +1306,9 @@ class _LibraryPane extends StatelessWidget {
           children: [
             Text(
               'Tag 筛选',
-              style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
             ),
             const Spacer(),
             if (selectedTagKeys.isNotEmpty)
@@ -645,7 +1333,9 @@ class _LibraryPane extends StatelessWidget {
         const SizedBox(height: 20),
         Text(
           '匹配结果 ${records.length}',
-          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
         ),
         const SizedBox(height: 10),
         if (records.isEmpty)
@@ -683,8 +1373,12 @@ class _LibraryPane extends StatelessWidget {
       decoration: BoxDecoration(
         color: palette.sidebar,
         border: Border(
-          right: compact ? BorderSide.none : BorderSide(color: palette.sidebarBorder),
-          bottom: compact ? BorderSide(color: palette.sidebarBorder) : BorderSide.none,
+          right: compact
+              ? BorderSide.none
+              : BorderSide(color: palette.sidebarBorder),
+          bottom: compact
+              ? BorderSide(color: palette.sidebarBorder)
+              : BorderSide.none,
         ),
       ),
       child: compact ? SizedBox(height: 760, child: content) : content,
@@ -716,7 +1410,9 @@ class _SyncCard extends StatelessWidget {
           children: [
             Text(
               '同步与元数据',
-              style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
             ),
             const SizedBox(height: 6),
             Text(
@@ -876,6 +1572,8 @@ class _WorkspacePane extends StatelessWidget {
     required this.split,
     required this.makerLook,
     required this.referenceImageBytes,
+    required this.gradedReferenceImageBytes,
+    required this.isProcessingPreview,
     required this.onPickReferenceImage,
     required this.onImportCube,
     required this.onPanelChanged,
@@ -887,6 +1585,8 @@ class _WorkspacePane extends StatelessWidget {
   final double split;
   final LookAdjustment makerLook;
   final Uint8List? referenceImageBytes;
+  final Uint8List? gradedReferenceImageBytes;
+  final bool isProcessingPreview;
   final VoidCallback onPickReferenceImage;
   final VoidCallback onImportCube;
   final ValueChanged<WorkspacePanel> onPanelChanged;
@@ -941,11 +1641,7 @@ class _WorkspacePane extends StatelessWidget {
           if (compact)
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                titleBlock,
-                const SizedBox(height: 12),
-                headerActions,
-              ],
+              children: [titleBlock, const SizedBox(height: 12), headerActions],
             )
           else
             Row(
@@ -986,7 +1682,8 @@ class _WorkspacePane extends StatelessWidget {
                             ),
                           ],
                           selected: {panel},
-                          onSelectionChanged: (selection) => onPanelChanged(selection.first),
+                          onSelectionChanged: (selection) =>
+                              onPanelChanged(selection.first),
                         ),
                         ConstrainedBox(
                           constraints: const BoxConstraints(maxWidth: 480),
@@ -1013,6 +1710,9 @@ class _WorkspacePane extends StatelessWidget {
                               borderRadius: BorderRadius.circular(8),
                               child: _PreviewCanvas(
                                 referenceImageBytes: referenceImageBytes,
+                                gradedReferenceImageBytes:
+                                    gradedReferenceImageBytes,
+                                isProcessingPreview: isProcessingPreview,
                                 painter: _ReferencePreviewPainter(
                                   look: activeLook,
                                   split: split,
@@ -1038,10 +1738,7 @@ class _WorkspacePane extends StatelessWidget {
                                   max: 0.95,
                                 ),
                               ),
-                              Text(
-                                'After',
-                                style: theme.textTheme.labelMedium,
-                              ),
+                              Text('After', style: theme.textTheme.labelMedium),
                             ],
                           ),
                         ],
@@ -1072,6 +1769,8 @@ class _InspectorPane extends StatelessWidget {
     required this.onCopyCube,
     required this.onSaveCube,
     required this.onCopyMetadata,
+    required this.onSaveMetadataJson,
+    required this.onEditMetadata,
     this.compact = false,
   });
 
@@ -1083,10 +1782,12 @@ class _InspectorPane extends StatelessWidget {
   final ValueChanged<LookAdjustment> onMakerLookChanged;
   final ValueChanged<String> onMakerNameChanged;
   final ValueChanged<String> onMakerCameraChanged;
-  final VoidCallback onAddGenerated;
+  final Future<void> Function() onAddGenerated;
   final VoidCallback onCopyCube;
   final VoidCallback onSaveCube;
   final VoidCallback onCopyMetadata;
+  final Future<void> Function(String) onSaveMetadataJson;
+  final VoidCallback onEditMetadata;
   final bool compact;
 
   @override
@@ -1094,9 +1795,15 @@ class _InspectorPane extends StatelessWidget {
     final theme = Theme.of(context);
     final palette = theme.extension<CodexPalette>()!;
     final children = [
-      if (panel == WorkspacePanel.preview) _RecordDetails(record: record),
+      if (panel == WorkspacePanel.preview)
+        _RecordDetails(record: record, onEditMetadata: onEditMetadata),
       if (panel == WorkspacePanel.metadata)
-        _MetadataPanel(record: record, onCopyMetadata: onCopyMetadata),
+        _MetadataPanel(
+          record: record,
+          onCopyMetadata: onCopyMetadata,
+          onSaveMetadataJson: onSaveMetadataJson,
+          onEditMetadata: onEditMetadata,
+        ),
       if (panel == WorkspacePanel.maker)
         _MakerPanel(
           look: makerLook,
@@ -1115,8 +1822,12 @@ class _InspectorPane extends StatelessWidget {
       decoration: BoxDecoration(
         color: compact ? theme.colorScheme.surface : palette.sidebar,
         border: Border(
-          left: compact ? BorderSide.none : BorderSide(color: palette.sidebarBorder),
-          top: compact ? BorderSide(color: palette.sidebarBorder) : BorderSide.none,
+          left: compact
+              ? BorderSide.none
+              : BorderSide(color: palette.sidebarBorder),
+          top: compact
+              ? BorderSide(color: palette.sidebarBorder)
+              : BorderSide.none,
         ),
       ),
       child: compact
@@ -1124,18 +1835,16 @@ class _InspectorPane extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               child: Column(children: children),
             )
-          : ListView(
-              padding: const EdgeInsets.all(20),
-              children: children,
-            ),
+          : ListView(padding: const EdgeInsets.all(20), children: children),
     );
   }
 }
 
 class _RecordDetails extends StatelessWidget {
-  const _RecordDetails({required this.record});
+  const _RecordDetails({required this.record, required this.onEditMetadata});
 
   final LutRecord record;
+  final VoidCallback onEditMetadata;
 
   @override
   Widget build(BuildContext context) {
@@ -1143,21 +1852,41 @@ class _RecordDetails extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: onEditMetadata,
+            icon: const Icon(Icons.edit_note),
+            label: const Text('编辑元数据 / Tag'),
+          ),
+        ),
+        const SizedBox(height: 14),
         Row(
           children: [
-            Expanded(child: _Metric(label: '功能', value: record.functionLabel)),
+            Expanded(
+              child: _Metric(label: '功能', value: record.functionLabel),
+            ),
             const SizedBox(width: 10),
-            Expanded(child: _Metric(label: '作者', value: record.author)),
+            Expanded(
+              child: _Metric(label: '作者', value: record.author),
+            ),
           ],
         ),
         const SizedBox(height: 10),
-        _InfoBlock(label: '适配相机', value: record.cameraCompatibility.map((item) => item.label).join('\n')),
+        _InfoBlock(
+          label: '适配相机',
+          value: record.cameraCompatibility
+              .map((item) => item.label)
+              .join('\n'),
+        ),
         const SizedBox(height: 10),
         _InfoBlock(label: '颜色风格', value: record.colorStyle),
         const SizedBox(height: 14),
         Text(
           'Tags',
-          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
         ),
         const SizedBox(height: 8),
         Wrap(
@@ -1178,24 +1907,80 @@ class _RecordDetails extends StatelessWidget {
           label: '同步位置',
           value: '${record.cloudProvider}\n${record.relativePath}',
         ),
+        if (record.fileHash.isNotEmpty || record.contentHash.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          _InfoBlock(
+            label: '重复检测指纹',
+            value: [
+              if (record.fileHash.isNotEmpty)
+                '文件：${_shortHash(record.fileHash)}',
+              if (record.contentHash.isNotEmpty)
+                '内容：${_shortHash(record.contentHash)}',
+              if (record.lutSize != null) '尺寸：${record.lutSize}³',
+              if (record.sourceFileSize != null)
+                '文件大小：${record.sourceFileSize} bytes',
+            ].join('\n'),
+          ),
+        ],
       ],
     );
   }
 }
 
-class _MetadataPanel extends StatelessWidget {
+String _shortHash(String hash) {
+  final value = hash.startsWith('sha256:') ? hash.substring(7) : hash;
+  if (value.length <= 16) return hash;
+  return 'sha256:${value.substring(0, 12)}...${value.substring(value.length - 8)}';
+}
+
+class _MetadataPanel extends StatefulWidget {
   const _MetadataPanel({
     required this.record,
     required this.onCopyMetadata,
+    required this.onSaveMetadataJson,
+    required this.onEditMetadata,
   });
 
   final LutRecord record;
   final VoidCallback onCopyMetadata;
+  final Future<void> Function(String) onSaveMetadataJson;
+  final VoidCallback onEditMetadata;
+
+  @override
+  State<_MetadataPanel> createState() => _MetadataPanelState();
+}
+
+class _MetadataPanelState extends State<_MetadataPanel> {
+  late final TextEditingController _controller;
+
+  String get _formattedJson {
+    const encoder = JsonEncoder.withIndent('  ');
+    return encoder.convert(widget.record.toJson());
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: _formattedJson);
+  }
+
+  @override
+  void didUpdateWidget(covariant _MetadataPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.record.id != widget.record.id ||
+        oldWidget.record.updatedAt != widget.record.updatedAt) {
+      _controller.text = _formattedJson;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    const encoder = JsonEncoder.withIndent('  ');
-    final json = encoder.convert(record.toJson());
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1203,13 +1988,19 @@ class _MetadataPanel extends StatelessWidget {
           children: [
             Text(
               'Sidecar JSON',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
             ),
             const Spacer(),
             OutlinedButton.icon(
-              onPressed: onCopyMetadata,
+              onPressed: widget.onEditMetadata,
+              icon: const Icon(Icons.edit_note, size: 18),
+              label: const Text('表单'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: widget.onCopyMetadata,
               icon: const Icon(Icons.copy, size: 18),
               label: const Text('复制'),
             ),
@@ -1219,15 +2010,131 @@ class _MetadataPanel extends StatelessWidget {
         Card(
           child: Padding(
             padding: const EdgeInsets.all(14),
-            child: SelectableText(
-              json,
+            child: TextField(
+              controller: _controller,
+              minLines: 18,
+              maxLines: 28,
               style: const TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 12,
                 height: 1.45,
               ),
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                hintText: '编辑 sidecar JSON',
+              ),
             ),
           ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: () => widget.onSaveMetadataJson(_controller.text),
+                icon: const Icon(Icons.save),
+                label: const Text('保存 JSON'),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () =>
+                    setState(() => _controller.text = _formattedJson),
+                icon: const Icon(Icons.refresh),
+                label: const Text('重置'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _DialogTextField extends StatelessWidget {
+  const _DialogTextField({
+    required this.controller,
+    required this.label,
+    required this.icon,
+    this.minLines = 1,
+    this.maxLines = 1,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final int minLines;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      minLines: minLines,
+      maxLines: maxLines,
+      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon)),
+    );
+  }
+}
+
+class _EditableTagDraft {
+  _EditableTagDraft({required this.type, required String value})
+    : valueController = TextEditingController(text: value);
+
+  LutTagType type;
+  final TextEditingController valueController;
+
+  void dispose() => valueController.dispose();
+}
+
+class _TagEditorRow extends StatelessWidget {
+  const _TagEditorRow({
+    required this.draft,
+    required this.onTypeChanged,
+    required this.onDelete,
+  });
+
+  final _EditableTagDraft draft;
+  final ValueChanged<LutTagType?> onTypeChanged;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          flex: 4,
+          child: DropdownButtonFormField<LutTagType>(
+            initialValue: draft.type,
+            items: [
+              for (final type in LutTagType.values)
+                DropdownMenuItem(value: type, child: Text(type.label)),
+            ],
+            onChanged: onTypeChanged,
+            decoration: const InputDecoration(
+              labelText: '类型',
+              prefixIcon: Icon(Icons.sell_outlined),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          flex: 5,
+          child: TextField(
+            controller: draft.valueController,
+            decoration: const InputDecoration(
+              labelText: 'Tag 值',
+              prefixIcon: Icon(Icons.tag),
+            ),
+          ),
+        ),
+        const SizedBox(width: 4),
+        IconButton(
+          tooltip: '删除 Tag',
+          onPressed: onDelete,
+          icon: const Icon(Icons.delete_outline),
         ),
       ],
     );
@@ -1253,7 +2160,7 @@ class _MakerPanel extends StatelessWidget {
   final ValueChanged<LookAdjustment> onLookChanged;
   final ValueChanged<String> onNameChanged;
   final ValueChanged<String> onCameraChanged;
-  final VoidCallback onAddGenerated;
+  final Future<void> Function() onAddGenerated;
   final VoidCallback onCopyCube;
   final VoidCallback onSaveCube;
 
@@ -1265,7 +2172,9 @@ class _MakerPanel extends StatelessWidget {
       children: [
         Text(
           '自定义 LUT',
-          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
         ),
         const SizedBox(height: 12),
         TextFormField(
@@ -1309,7 +2218,8 @@ class _MakerPanel extends StatelessWidget {
         _AdjustmentSlider(
           label: '色温',
           value: look.temperature,
-          onChanged: (value) => onLookChanged(look.copyWith(temperature: value)),
+          onChanged: (value) =>
+              onLookChanged(look.copyWith(temperature: value)),
         ),
         _AdjustmentSlider(
           label: '色调',
@@ -1329,29 +2239,33 @@ class _MakerPanel extends StatelessWidget {
         _AdjustmentSlider(
           label: '高光保护',
           value: look.highlightRollOff,
-          onChanged: (value) => onLookChanged(look.copyWith(highlightRollOff: value)),
+          onChanged: (value) =>
+              onLookChanged(look.copyWith(highlightRollOff: value)),
         ),
         _AdjustmentSlider(
           label: '红饱和',
           value: look.redSaturation,
-          onChanged: (value) => onLookChanged(look.copyWith(redSaturation: value)),
+          onChanged: (value) =>
+              onLookChanged(look.copyWith(redSaturation: value)),
         ),
         _AdjustmentSlider(
           label: '绿饱和',
           value: look.greenSaturation,
-          onChanged: (value) => onLookChanged(look.copyWith(greenSaturation: value)),
+          onChanged: (value) =>
+              onLookChanged(look.copyWith(greenSaturation: value)),
         ),
         _AdjustmentSlider(
           label: '蓝饱和',
           value: look.blueSaturation,
-          onChanged: (value) => onLookChanged(look.copyWith(blueSaturation: value)),
+          onChanged: (value) =>
+              onLookChanged(look.copyWith(blueSaturation: value)),
         ),
         const SizedBox(height: 12),
         Row(
           children: [
             Expanded(
               child: FilledButton.icon(
-                onPressed: onAddGenerated,
+                onPressed: () => onAddGenerated(),
                 icon: const Icon(Icons.library_add),
                 label: const Text('加入库'),
               ),
@@ -1383,12 +2297,16 @@ class _MakerPanel extends StatelessWidget {
 class _PreviewCanvas extends StatelessWidget {
   const _PreviewCanvas({
     required this.referenceImageBytes,
+    required this.gradedReferenceImageBytes,
+    required this.isProcessingPreview,
     required this.painter,
     required this.look,
     required this.split,
   });
 
   final Uint8List? referenceImageBytes;
+  final Uint8List? gradedReferenceImageBytes;
+  final bool isProcessingPreview;
   final CustomPainter painter;
   final LookAdjustment look;
   final double split;
@@ -1397,10 +2315,7 @@ class _PreviewCanvas extends StatelessWidget {
   Widget build(BuildContext context) {
     final bytes = referenceImageBytes;
     if (bytes == null) {
-      return CustomPaint(
-        painter: painter,
-        child: const SizedBox.expand(),
-      );
+      return CustomPaint(painter: painter, child: const SizedBox.expand());
     }
 
     return LayoutBuilder(
@@ -1409,15 +2324,18 @@ class _PreviewCanvas extends StatelessWidget {
         final height = constraints.maxHeight;
         final splitX = width * split;
         Widget image({required bool graded}) {
+          final activeBytes = graded
+              ? gradedReferenceImageBytes ?? bytes
+              : bytes;
           final child = Image.memory(
-            bytes,
+            activeBytes,
             width: width,
             height: height,
             fit: BoxFit.cover,
             gaplessPlayback: true,
             filterQuality: FilterQuality.medium,
           );
-          if (!graded) return child;
+          if (!graded || gradedReferenceImageBytes != null) return child;
           return ColorFiltered(
             colorFilter: ColorFilter.matrix(_lookFilterMatrix(look)),
             child: child,
@@ -1436,29 +2354,37 @@ class _PreviewCanvas extends StatelessWidget {
               left: splitX - 1,
               top: 0,
               bottom: 0,
-              child: Container(width: 2, color: Colors.white.withValues(alpha: 0.86)),
+              child: Container(
+                width: 2,
+                color: Colors.white.withValues(alpha: 0.86),
+              ),
             ),
             Positioned(
               left: splitX - 7,
               bottom: 24,
-              child: DecoratedBox(
-                decoration: const BoxDecoration(
+              child: const DecoratedBox(
+                decoration: BoxDecoration(
                   color: Color(0xFFAEBBFF),
                   shape: BoxShape.circle,
                 ),
-                child: const SizedBox(width: 14, height: 14),
+                child: SizedBox(width: 14, height: 14),
               ),
             ),
-            const Positioned(
-              left: 14,
-              top: 14,
-              child: _PreviewLabel('Before'),
-            ),
-            const Positioned(
-              right: 14,
-              top: 14,
-              child: _PreviewLabel('After'),
-            ),
+            const Positioned(left: 14, top: 14, child: _PreviewLabel('Before')),
+            const Positioned(right: 14, top: 14, child: _PreviewLabel('After')),
+            if (isProcessingPreview)
+              Positioned.fill(
+                child: ColoredBox(
+                  color: Colors.black.withValues(alpha: 0.28),
+                  child: const Center(
+                    child: SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: CircularProgressIndicator(strokeWidth: 3),
+                    ),
+                  ),
+                ),
+              ),
           ],
         );
       },
@@ -1472,10 +2398,12 @@ class _SplitClipper extends CustomClipper<Rect> {
   final double split;
 
   @override
-  Rect getClip(Size size) => Rect.fromLTWH(0, 0, size.width * split, size.height);
+  Rect getClip(Size size) =>
+      Rect.fromLTWH(0, 0, size.width * split, size.height);
 
   @override
-  bool shouldReclip(covariant _SplitClipper oldClipper) => oldClipper.split != split;
+  bool shouldReclip(covariant _SplitClipper oldClipper) =>
+      oldClipper.split != split;
 }
 
 class _PreviewLabel extends StatelessWidget {
@@ -1594,10 +2522,7 @@ class _AdjustmentSlider extends StatelessWidget {
 }
 
 class _Metric extends StatelessWidget {
-  const _Metric({
-    required this.label,
-    required this.value,
-  });
+  const _Metric({required this.label, required this.value});
 
   final String label;
   final String value;
@@ -1620,7 +2545,9 @@ class _Metric extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               value,
-              style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ],
         ),
@@ -1630,10 +2557,7 @@ class _Metric extends StatelessWidget {
 }
 
 class _InfoBlock extends StatelessWidget {
-  const _InfoBlock({
-    required this.label,
-    required this.value,
-  });
+  const _InfoBlock({required this.label, required this.value});
 
   final String label;
   final String value;
@@ -1675,12 +2599,16 @@ class _ReferencePreviewPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = isDark ? const Color(0xFF07080A) : const Color(0xFFD9D9D5);
+    final bg = Paint()
+      ..color = isDark ? const Color(0xFF07080A) : const Color(0xFFD9D9D5);
     canvas.drawRect(Offset.zero & size, bg);
 
     final frame = _largestRect(size, const Size(16, 10)).deflate(12);
     final radius = BorderRadius.circular(8).toRRect(frame);
-    canvas.drawRRect(radius, Paint()..color = isDark ? const Color(0xFF111315) : Colors.white);
+    canvas.drawRRect(
+      radius,
+      Paint()..color = isDark ? const Color(0xFF111315) : Colors.white,
+    );
 
     canvas.save();
     canvas.clipRRect(radius);
@@ -1694,7 +2622,11 @@ class _ReferencePreviewPainter extends CustomPainter {
     final linePaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.86)
       ..strokeWidth = 2;
-    canvas.drawLine(Offset(splitX, frame.top), Offset(splitX, frame.bottom), linePaint);
+    canvas.drawLine(
+      Offset(splitX, frame.top),
+      Offset(splitX, frame.bottom),
+      linePaint,
+    );
     canvas.drawCircle(
       Offset(splitX, frame.bottom - 30),
       7,
@@ -1731,7 +2663,11 @@ class _ReferencePreviewPainter extends CustomPainter {
     );
   }
 
-  void _drawReferenceScene(Canvas canvas, Rect rect, LookAdjustment activeLook) {
+  void _drawReferenceScene(
+    Canvas canvas,
+    Rect rect,
+    LookAdjustment activeLook,
+  ) {
     Color c(Color color) => gradeColor(color, activeLook);
     final sky = Paint()
       ..shader = LinearGradient(
@@ -1811,7 +2747,12 @@ class _ReferencePreviewPainter extends CustomPainter {
     ];
     for (var i = 0; i < swatches.length; i += 1) {
       canvas.drawRect(
-        Rect.fromLTWH(card.outerRect.left + swatchWidth * i, swatchTop, swatchWidth, swatchHeight),
+        Rect.fromLTWH(
+          card.outerRect.left + swatchWidth * i,
+          swatchTop,
+          swatchWidth,
+          swatchHeight,
+        ),
         Paint()..color = c(swatches[i]),
       );
     }
@@ -1828,7 +2769,10 @@ class _ReferencePreviewPainter extends CustomPainter {
     );
     canvas.drawOval(
       Rect.fromCenter(
-        center: Offset(bodyRect.center.dx - 4, bodyRect.top + bodyRect.height * 0.42),
+        center: Offset(
+          bodyRect.center.dx - 4,
+          bodyRect.top + bodyRect.height * 0.42,
+        ),
         width: bodyRect.width * 0.55,
         height: bodyRect.height * 0.48,
       ),
@@ -1836,7 +2780,10 @@ class _ReferencePreviewPainter extends CustomPainter {
     );
     canvas.drawOval(
       Rect.fromCenter(
-        center: Offset(bodyRect.center.dx, bodyRect.top + bodyRect.height * 0.18),
+        center: Offset(
+          bodyRect.center.dx,
+          bodyRect.top + bodyRect.height * 0.18,
+        ),
         width: bodyRect.width * 0.82,
         height: bodyRect.height * 0.38,
       ),
@@ -1870,7 +2817,12 @@ class _ReferencePreviewPainter extends CustomPainter {
       textDirection: TextDirection.ltr,
     )..layout();
     final bg = RRect.fromRectAndRadius(
-      Rect.fromLTWH(offset.dx - 8, offset.dy - 5, painter.width + 16, painter.height + 10),
+      Rect.fromLTWH(
+        offset.dx - 8,
+        offset.dy - 5,
+        painter.width + 16,
+        painter.height + 10,
+      ),
       const Radius.circular(4),
     );
     canvas.drawRRect(bg, Paint()..color = Colors.black.withValues(alpha: 0.42));
@@ -1890,7 +2842,8 @@ Color gradeColor(Color color, LookAdjustment look) {
   final redWeight = _hueWeight(hsl.hue, 0);
   final greenWeight = _hueWeight(hsl.hue, 120);
   final blueWeight = _hueWeight(hsl.hue, 240);
-  final channelSaturation = look.redSaturation * redWeight +
+  final channelSaturation =
+      look.redSaturation * redWeight +
       look.greenSaturation * greenWeight +
       look.blueSaturation * blueWeight;
   final temperatureHue = look.temperature * -8;
@@ -1907,7 +2860,11 @@ Color gradeColor(Color color, LookAdjustment look) {
   }
   saturation = saturation.clamp(0.0, 1.0).toDouble();
   lightness = lightness.clamp(0.0, 1.0).toDouble();
-  return hsl.withHue(hue).withSaturation(saturation).withLightness(lightness).toColor();
+  return hsl
+      .withHue(hue)
+      .withSaturation(saturation)
+      .withLightness(lightness)
+      .toColor();
 }
 
 double _hueWeight(double hue, double center) {

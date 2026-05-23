@@ -20,18 +20,18 @@ class CameraCompatibility {
   }
 
   Map<String, Object> toJson() => {
-        'brand': brand,
-        'models': models,
-        'profile': profile,
-        'category': category,
-      };
+    'brand': brand,
+    'models': models,
+    'profile': profile,
+    'category': category,
+  };
 
   factory CameraCompatibility.fromJson(Map<String, Object?> json) {
     return CameraCompatibility(
       brand: json['brand']?.toString() ?? '',
-      models: (json['models'] as List<Object?>? ?? const <Object?>[])
-          .map((item) => item.toString())
-          .toList(),
+      models: _objectList(
+        json['models'],
+      ).map((item) => item.toString()).toList(),
       profile: json['profile']?.toString() ?? '',
       category: json['category']?.toString() ?? '',
     );
@@ -53,6 +53,11 @@ class LutRecord {
     required this.updatedAt,
     this.cloudProvider = 'Local Folder',
     this.relativePath = '',
+    this.fileHash = '',
+    this.contentHash = '',
+    this.lutSize,
+    this.sourceFileSize,
+    this.importedAt,
   });
 
   final String id;
@@ -68,9 +73,15 @@ class LutRecord {
   final DateTime updatedAt;
   final String cloudProvider;
   final String relativePath;
+  final String fileHash;
+  final String contentHash;
+  final int? lutSize;
+  final int? sourceFileSize;
+  final DateTime? importedAt;
 
-  String get primaryCamera =>
-      cameraCompatibility.isEmpty ? '通用 / 未指定' : cameraCompatibility.first.label;
+  String get primaryCamera => cameraCompatibility.isEmpty
+      ? '通用 / 未指定'
+      : cameraCompatibility.first.label;
 
   String get functionLabel => tagValue(LutTagType.function) ?? '未分类';
 
@@ -117,6 +128,11 @@ class LutRecord {
     DateTime? updatedAt,
     String? cloudProvider,
     String? relativePath,
+    String? fileHash,
+    String? contentHash,
+    int? lutSize,
+    int? sourceFileSize,
+    DateTime? importedAt,
   }) {
     return LutRecord(
       id: id ?? this.id,
@@ -132,52 +148,83 @@ class LutRecord {
       updatedAt: updatedAt ?? this.updatedAt,
       cloudProvider: cloudProvider ?? this.cloudProvider,
       relativePath: relativePath ?? this.relativePath,
+      fileHash: fileHash ?? this.fileHash,
+      contentHash: contentHash ?? this.contentHash,
+      lutSize: lutSize ?? this.lutSize,
+      sourceFileSize: sourceFileSize ?? this.sourceFileSize,
+      importedAt: importedAt ?? this.importedAt,
     );
   }
 
   Map<String, Object> toJson() => {
-        'id': id,
-        'name': name,
-        'fileName': fileName,
-        'cameraCompatibility':
-            cameraCompatibility.map((camera) => camera.toJson()).toList(),
-        'author': author,
-        'colorStyle': colorStyle,
-        'tags': tags.map((tag) => tag.toJson()).toList(),
-        'notes': notes,
-        'look': look.toJson(),
-        'cloudProvider': cloudProvider,
-        'relativePath': relativePath,
-        'createdAt': createdAt.toIso8601String(),
-        'updatedAt': updatedAt.toIso8601String(),
-      };
+    'id': id,
+    'name': name,
+    'fileName': fileName,
+    'cameraCompatibility': cameraCompatibility
+        .map((camera) => camera.toJson())
+        .toList(),
+    'author': author,
+    'colorStyle': colorStyle,
+    'tags': tags.map((tag) => tag.toJson()).toList(),
+    'notes': notes,
+    'look': look.toJson(),
+    'cloudProvider': cloudProvider,
+    'relativePath': relativePath,
+    'fileHash': fileHash,
+    'contentHash': contentHash,
+    if (lutSize != null) 'lutSize': lutSize!,
+    if (sourceFileSize != null) 'sourceFileSize': sourceFileSize!,
+    if (importedAt != null) 'importedAt': importedAt!.toIso8601String(),
+    'createdAt': createdAt.toIso8601String(),
+    'updatedAt': updatedAt.toIso8601String(),
+  };
 
   factory LutRecord.fromJson(Map<String, Object?> json) {
+    final legacyPreviewTuning = _stringObjectMap(json['previewTuning']);
     return LutRecord(
       id: json['id']?.toString() ?? '',
       name: json['name']?.toString() ?? '',
       fileName: json['fileName']?.toString() ?? '',
-      cameraCompatibility:
-          (json['cameraCompatibility'] as List<Object?>? ?? const <Object?>[])
-              .whereType<Map<String, Object?>>()
-              .map(CameraCompatibility.fromJson)
-              .toList(),
+      cameraCompatibility: _objectList(json['cameraCompatibility'])
+          .map(_stringObjectMap)
+          .whereType<Map<String, Object?>>()
+          .map(CameraCompatibility.fromJson)
+          .toList(),
       author: json['author']?.toString() ?? '',
       colorStyle: json['colorStyle']?.toString() ?? '',
-      tags: (json['tags'] as List<Object?>? ?? const <Object?>[])
+      tags: _objectList(json['tags'])
+          .map(_stringObjectMap)
           .whereType<Map<String, Object?>>()
           .map(LutTag.fromJson)
           .toList(),
       notes: json['notes']?.toString() ?? '',
       look: LookAdjustment.fromJson(
-        json['look'] as Map<String, Object?>? ?? const <String, Object?>{},
+        _stringObjectMap(json['look']) ??
+            legacyPreviewTuning ??
+            const <String, Object?>{},
       ),
       cloudProvider: json['cloudProvider']?.toString() ?? 'Local Folder',
       relativePath: json['relativePath']?.toString() ?? '',
-      createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? '') ??
+      fileHash: json['fileHash']?.toString() ?? '',
+      contentHash: json['contentHash']?.toString() ?? '',
+      lutSize: (json['lutSize'] as num?)?.toInt(),
+      sourceFileSize: (json['sourceFileSize'] as num?)?.toInt(),
+      importedAt: DateTime.tryParse(json['importedAt']?.toString() ?? ''),
+      createdAt:
+          DateTime.tryParse(json['createdAt']?.toString() ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
-      updatedAt: DateTime.tryParse(json['updatedAt']?.toString() ?? '') ??
+      updatedAt:
+          DateTime.tryParse(json['updatedAt']?.toString() ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
     );
   }
+}
+
+List<Object?> _objectList(Object? value) {
+  return value is List ? value : const <Object?>[];
+}
+
+Map<String, Object?>? _stringObjectMap(Object? value) {
+  if (value is! Map) return null;
+  return value.map((key, value) => MapEntry(key.toString(), value));
 }

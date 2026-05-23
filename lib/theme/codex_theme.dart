@@ -47,23 +47,28 @@ class CodexPalette extends ThemeExtension<CodexPalette> {
 
 ThemeData buildCodexTheme(Brightness brightness) {
   final isDark = brightness == Brightness.dark;
-  final scheme = ColorScheme.fromSeed(
-    seedColor: const Color(0xFF8DA2FF),
-    brightness: brightness,
-  ).copyWith(
-    primary: isDark ? const Color(0xFFAEBBFF) : const Color(0xFF4057C8),
-    secondary: isDark ? const Color(0xFFD9B17E) : const Color(0xFF7E5930),
-    surface: isDark ? const Color(0xFF111315) : const Color(0xFFF7F7F4),
-    surfaceContainer: isDark ? const Color(0xFF17191C) : const Color(0xFFEDEDEA),
-    surfaceContainerHigh: isDark ? const Color(0xFF202328) : const Color(0xFFE2E2DF),
-    outline: isDark ? const Color(0xFF373B42) : const Color(0xFFC8C8C4),
-  );
+  final scheme =
+      ColorScheme.fromSeed(
+        seedColor: const Color(0xFF8DA2FF),
+        brightness: brightness,
+      ).copyWith(
+        primary: isDark ? const Color(0xFFAEBBFF) : const Color(0xFF4057C8),
+        secondary: isDark ? const Color(0xFFD9B17E) : const Color(0xFF7E5930),
+        surface: isDark ? const Color(0xFF111315) : const Color(0xFFF7F7F4),
+        surfaceContainer: isDark
+            ? const Color(0xFF17191C)
+            : const Color(0xFFEDEDEA),
+        surfaceContainerHigh: isDark
+            ? const Color(0xFF202328)
+            : const Color(0xFFE2E2DF),
+        outline: isDark ? const Color(0xFF373B42) : const Color(0xFFC8C8C4),
+      );
 
   final textTheme = Typography.material2021().black.apply(
-        fontFamily: 'Inter',
-        bodyColor: scheme.onSurface,
-        displayColor: scheme.onSurface,
-      );
+    fontFamily: 'Inter',
+    bodyColor: scheme.onSurface,
+    displayColor: scheme.onSurface,
+  );
 
   return ThemeData(
     useMaterial3: true,
@@ -74,9 +79,13 @@ ThemeData buildCodexTheme(Brightness brightness) {
     extensions: [
       CodexPalette(
         sidebar: isDark ? const Color(0xFF0F1113) : const Color(0xFFEEEEEB),
-        sidebarBorder: isDark ? const Color(0xFF2E3238) : const Color(0xFFD6D6D2),
+        sidebarBorder: isDark
+            ? const Color(0xFF2E3238)
+            : const Color(0xFFD6D6D2),
         previewBase: isDark ? const Color(0xFF0B0C0E) : const Color(0xFFE8E8E4),
-        tagBackground: isDark ? const Color(0xFF1A1D21) : const Color(0xFFF2F2EF),
+        tagBackground: isDark
+            ? const Color(0xFF1A1D21)
+            : const Color(0xFFF2F2EF),
         tagSelected: isDark ? const Color(0xFF2B3146) : const Color(0xFFE3E7FF),
       ),
     ],
@@ -96,7 +105,9 @@ ThemeData buildCodexTheme(Brightness brightness) {
       ),
     ),
     chipTheme: ChipThemeData(
-      backgroundColor: isDark ? const Color(0xFF1A1D21) : const Color(0xFFF2F2EF),
+      backgroundColor: isDark
+          ? const Color(0xFF1A1D21)
+          : const Color(0xFFF2F2EF),
       selectedColor: isDark ? const Color(0xFF2B3146) : const Color(0xFFE3E7FF),
       checkmarkColor: scheme.primary,
       side: BorderSide(color: scheme.outline.withValues(alpha: 0.55)),

@@ -12,7 +12,7 @@ enum LutTagType {
   lightingScene,
   workflow,
   intensity,
-  author
+  author,
 }
 
 extension LutTagTypeLabel on LutTagType {
@@ -51,20 +51,14 @@ extension LutTagTypeLabel on LutTagType {
 }
 
 class LutTag {
-  const LutTag({
-    required this.type,
-    required this.value,
-  });
+  const LutTag({required this.type, required this.value});
 
   final LutTagType type;
   final String value;
 
   String get key => '${type.name}:$value';
 
-  Map<String, String> toJson() => {
-        'type': type.name,
-        'value': value,
-      };
+  Map<String, String> toJson() => {'type': type.name, 'value': value};
 
   factory LutTag.fromJson(Map<String, Object?> json) {
     final rawType = json['type']?.toString() ?? LutTagType.style.name;

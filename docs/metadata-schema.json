@@ -7,17 +7,18 @@
     "id",
     "name",
     "fileName",
-    "category",
     "cameraCompatibility",
     "author",
     "colorStyle",
+    "tags",
+    "look",
     "createdAt",
     "updatedAt"
   ],
   "properties": {
     "id": {
       "type": "string",
-      "description": "Stable UUID or app-generated id."
+      "description": "Stable app-generated id."
     },
     "name": {
       "type": "string"
@@ -26,25 +27,15 @@
       "type": "string",
       "description": "Original LUT file name. The LUT file itself is not modified."
     },
-    "fileHash": {
-      "type": "string",
-      "description": "Optional hash for duplicate detection."
-    },
-    "category": {
-      "type": "string",
-      "examples": [
-        "复古",
-        "清新",
-        "Log矫正"
-      ]
-    },
     "cameraCompatibility": {
       "type": "array",
       "items": {
         "type": "object",
         "required": [
           "brand",
-          "models"
+          "models",
+          "profile",
+          "category"
         ],
         "properties": {
           "brand": {
@@ -58,6 +49,9 @@
           },
           "profile": {
             "type": "string"
+          },
+          "category": {
+            "type": "string"
           }
         }
       }
@@ -70,72 +64,45 @@
     },
     "tags": {
       "type": "array",
-      "description": "Typed tags are preferred. Plain strings are kept for backward compatibility with early prototypes.",
+      "description": "Typed tags used for search and filtering.",
       "items": {
-        "oneOf": [
-          {
-            "type": "string"
+        "type": "object",
+        "required": [
+          "type",
+          "value"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "cameraCategory",
+              "cameraBrand",
+              "cameraModel",
+              "captureProfile",
+              "function",
+              "style",
+              "shadowTone",
+              "highlightTone",
+              "colorBias",
+              "skinTone",
+              "lightingScene",
+              "workflow",
+              "intensity",
+              "author"
+            ]
           },
-          {
-            "type": "object",
-            "required": [
-              "type",
-              "value"
-            ],
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "cameraCategory",
-                  "cameraBrand",
-                  "cameraModel",
-                  "captureProfile",
-                  "function",
-                  "style",
-                  "shadowTone",
-                  "highlightTone",
-                  "colorBias",
-                  "skinTone",
-                  "lightingScene",
-                  "workflow",
-                  "intensity",
-                  "author"
-                ]
-              },
-              "value": {
-                "type": "string"
-              }
-            }
+          "value": {
+            "type": "string"
           }
-        ]
+        }
       }
     },
     "notes": {
       "type": "string"
     },
-    "cloud": {
+    "look": {
       "type": "object",
-      "properties": {
-        "provider": {
-          "type": "string",
-          "examples": [
-            "iCloud Drive",
-            "OneDrive",
-            "Dropbox",
-            "Local Folder"
-          ]
-        },
-        "relativePath": {
-          "type": "string"
-        },
-        "lastSyncedAt": {
-          "type": "string",
-          "format": "date-time"
-        }
-      }
-    },
-    "previewTuning": {
-      "type": "object",
+      "description": "Editable HSL-style look values used by generated LUT records and fallback previews.",
       "properties": {
         "exposure": {
           "type": "number"
@@ -146,6 +113,9 @@
         "saturation": {
           "type": "number"
         },
+        "luminance": {
+          "type": "number"
+        },
         "temperature": {
           "type": "number"
         },
@@ -154,8 +124,55 @@
         },
         "hueShift": {
           "type": "number"
+        },
+        "shadowLift": {
+          "type": "number"
+        },
+        "highlightRollOff": {
+          "type": "number"
+        },
+        "redSaturation": {
+          "type": "number"
+        },
+        "greenSaturation": {
+          "type": "number"
+        },
+        "blueSaturation": {
+          "type": "number"
         }
       }
+    },
+    "cloudProvider": {
+      "type": "string",
+      "examples": [
+        "iCloud Drive",
+        "OneDrive",
+        "Dropbox",
+        "Local Folder"
+      ]
+    },
+    "relativePath": {
+      "type": "string"
+    },
+    "fileHash": {
+      "type": "string",
+      "description": "SHA-256 hash of the exact imported LUT file bytes, prefixed with sha256:."
+    },
+    "contentHash": {
+      "type": "string",
+      "description": "SHA-256 hash of normalized LUT numeric data, ignoring title, comments, and whitespace."
+    },
+    "lutSize": {
+      "type": "integer",
+      "description": "3D LUT cube size, such as 17, 33, or 65."
+    },
+    "sourceFileSize": {
+      "type": "integer",
+      "description": "Original imported file size in bytes."
+    },
+    "importedAt": {
+      "type": "string",
+      "format": "date-time"
     },
     "createdAt": {
       "type": "string",

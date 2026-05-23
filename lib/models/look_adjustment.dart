@@ -60,19 +60,19 @@ class LookAdjustment {
   }
 
   Map<String, double> toJson() => {
-        'exposure': exposure,
-        'contrast': contrast,
-        'saturation': saturation,
-        'luminance': luminance,
-        'temperature': temperature,
-        'tint': tint,
-        'hueShift': hueShift,
-        'shadowLift': shadowLift,
-        'highlightRollOff': highlightRollOff,
-        'redSaturation': redSaturation,
-        'greenSaturation': greenSaturation,
-        'blueSaturation': blueSaturation,
-      };
+    'exposure': exposure,
+    'contrast': contrast,
+    'saturation': saturation,
+    'luminance': luminance,
+    'temperature': temperature,
+    'tint': tint,
+    'hueShift': hueShift,
+    'shadowLift': shadowLift,
+    'highlightRollOff': highlightRollOff,
+    'redSaturation': redSaturation,
+    'greenSaturation': greenSaturation,
+    'blueSaturation': blueSaturation,
+  };
 
   factory LookAdjustment.fromJson(Map<String, Object?> json) {
     double read(String key) => (json[key] as num?)?.toDouble() ?? 0;

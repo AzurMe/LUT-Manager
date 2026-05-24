@@ -1,5 +1,7 @@
 import '../models/lut_tag.dart';
 
+// Curated seed catalog for the filter UI. Users can still add arbitrary
+// camera tags through metadata editing; this list only keeps common options handy.
 const cameraBrandModels = <String, List<String>>{
   'ARRI': ['ALEXA 35', 'ALEXA Mini LF', 'ALEXA LF', 'ALEXA Mini', 'AMIRA'],
   'Blackmagic Design': [

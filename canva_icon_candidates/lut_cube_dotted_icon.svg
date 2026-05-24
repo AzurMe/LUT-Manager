@@ -1,0 +1,28 @@
+<svg width="2000" height="2000" viewBox="0 0 2000 2000" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="dotRainbow" x1="250" y1="260" x2="1750" y2="1740" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ff2d2d"/>
+      <stop offset="15%" stop-color="#ff9900"/>
+      <stop offset="30%" stop-color="#ffe600"/>
+      <stop offset="46%" stop-color="#23d94f"/>
+      <stop offset="62%" stop-color="#00c8ff"/>
+      <stop offset="79%" stop-color="#315bff"/>
+      <stop offset="100%" stop-color="#d52dff"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="2000" height="2000" fill="#ffffff"/>
+
+  <g
+    fill="none"
+    stroke="url(#dotRainbow)"
+    stroke-width="54"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-dasharray="1 82">
+    <path d="M1000 250 L1750 625 L1750 1375 L1000 1750 L250 1375 L250 625 Z"/>
+    <path d="M1000 1000 L1750 625"/>
+    <path d="M1000 1000 L250 625"/>
+    <path d="M1000 1000 L1000 1750"/>
+  </g>
+</svg>

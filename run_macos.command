@@ -26,6 +26,8 @@ echo
 TEMP_BUILD_REAL="/private/tmp/lut_manager_flutter_build"
 TEMP_BUILD_LINK="$ROOT_DIR/.lut_manager_build"
 
+# Documents/iCloud locations can add provenance xattrs that break codesign.
+# Build through a project-local symlink that points at /private/tmp instead.
 restore_flutter_build_dir() {
   "$FLUTTER_BIN" config --build-dir=build >/dev/null 2>&1 || true
 }

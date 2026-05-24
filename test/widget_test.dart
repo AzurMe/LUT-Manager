@@ -12,7 +12,7 @@ void main() {
     expect(find.text('LUT Manager'), findsOneWidget);
     expect(find.text('Eterna Soft Contrast'), findsWidgets);
     expect(find.text('Tag 筛选'), findsOneWidget);
-    expect(find.text('生成 LUT'), findsOneWidget);
+    expect(find.text('在 LUT 基础上修改'), findsOneWidget);
   });
 
   testWidgets('Theme toggle is available', (tester) async {

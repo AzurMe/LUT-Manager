@@ -18,7 +18,7 @@ import '../services/lut_image_processor.dart';
 import '../services/lut_library_repository.dart';
 import '../theme/codex_theme.dart';
 
-enum WorkspacePanel { preview, metadata, maker }
+enum WorkspacePanel { preview, lutView, metadata, maker }
 
 enum DuplicateKind { file, content }
 
@@ -65,7 +65,11 @@ class _LutManagerHomeState extends State<LutManagerHome> {
   Uint8List? _referenceImageBytes;
   Uint8List? _gradedReferenceImageBytes;
   String? _gradedRecordId;
+  CubeLut? _activeCube;
+  String? _activeCubeRecordId;
   bool _isProcessingPreview = false;
+  bool _isLoadingCube = false;
+  int _previewRequestId = 0;
 
   @override
   void initState() {
@@ -155,11 +159,19 @@ class _LutManagerHomeState extends State<LutManagerHome> {
         .toList();
   }
 
+  LutRecord? get _makerBaseRecord {
+    for (final record in _records) {
+      if (record.id == _selectedId) return record;
+    }
+    return _records.isEmpty ? null : _records.first;
+  }
+
   Map<LutTagType, List<LutTag>> get _tagGroups {
     final grouped = LinkedHashMap<LutTagType, LinkedHashMap<String, LutTag>>();
     for (final type in LutTagType.values) {
       grouped[type] = LinkedHashMap<String, LutTag>();
     }
+    // Seed common camera tags first, then merge tags discovered from the library.
     for (final tag in cameraTagCatalog) {
       grouped[tag.type]?[tag.key] = tag;
     }
@@ -205,13 +217,19 @@ class _LutManagerHomeState extends State<LutManagerHome> {
                     panel: _panel,
                     split: _split,
                     makerLook: _makerLook,
+                    makerBaseName: _makerBaseRecord?.name,
                     referenceImageBytes: _referenceImageBytes,
                     gradedReferenceImageBytes: _gradedRecordId == _selectedId
                         ? _gradedReferenceImageBytes
                         : null,
+                    activeCube: _activeCubeRecordId == _selectedId
+                        ? _activeCube
+                        : null,
                     isProcessingPreview: _isProcessingPreview,
+                    isLoadingCube: _isLoadingCube,
                     onPickReferenceImage: _pickReferenceImage,
                     onImportCube: _importCubeFile,
+                    onExportImage: _exportGradedReferenceImage,
                     onPanelChanged: _setPanel,
                     onSplitChanged: (value) => setState(() => _split = value),
                   ),
@@ -224,8 +242,8 @@ class _LutManagerHomeState extends State<LutManagerHome> {
                     makerLook: _makerLook,
                     makerName: _makerName,
                     makerCamera: _makerCamera,
-                    onMakerLookChanged: (look) =>
-                        setState(() => _makerLook = look),
+                    makerBaseName: _makerBaseRecord?.name,
+                    onMakerLookChanged: _updateMakerLook,
                     onMakerNameChanged: (value) => _makerName = value,
                     onMakerCameraChanged: (value) => _makerCamera = value,
                     onAddGenerated: _addGeneratedLut,
@@ -271,13 +289,19 @@ class _LutManagerHomeState extends State<LutManagerHome> {
                       panel: _panel,
                       split: _split,
                       makerLook: _makerLook,
+                      makerBaseName: _makerBaseRecord?.name,
                       referenceImageBytes: _referenceImageBytes,
                       gradedReferenceImageBytes: _gradedRecordId == _selectedId
                           ? _gradedReferenceImageBytes
                           : null,
+                      activeCube: _activeCubeRecordId == _selectedId
+                          ? _activeCube
+                          : null,
                       isProcessingPreview: _isProcessingPreview,
+                      isLoadingCube: _isLoadingCube,
                       onPickReferenceImage: _pickReferenceImage,
                       onImportCube: _importCubeFile,
+                      onExportImage: _exportGradedReferenceImage,
                       onPanelChanged: _setPanel,
                       onSplitChanged: (value) => setState(() => _split = value),
                     ),
@@ -290,8 +314,8 @@ class _LutManagerHomeState extends State<LutManagerHome> {
                     makerLook: _makerLook,
                     makerName: _makerName,
                     makerCamera: _makerCamera,
-                    onMakerLookChanged: (look) =>
-                        setState(() => _makerLook = look),
+                    makerBaseName: _makerBaseRecord?.name,
+                    onMakerLookChanged: _updateMakerLook,
                     onMakerNameChanged: (value) => _makerName = value,
                     onMakerCameraChanged: (value) => _makerCamera = value,
                     onAddGenerated: _addGeneratedLut,
@@ -338,12 +362,21 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     _refreshCubePreview();
   }
 
+  void _updateMakerLook(LookAdjustment look) {
+    setState(() => _makerLook = look);
+    if (_panel == WorkspacePanel.maker) {
+      _refreshCubePreview();
+    }
+  }
+
   Future<void> _addGeneratedLut() async {
     final now = DateTime.now();
     final camera = _parseCamera(_makerCamera);
-    final cubeText = _generateCubeText(_makerName, _makerLook);
+    final baseRecord = _makerBaseRecord;
+    final cubeText = await _generateMakerCubeText();
+    final cube = CubeLut.parse(cubeText);
     final fileHash = _hashText(cubeText);
-    final contentHash = _hashText(CubeLut.parse(cubeText).normalizedContent);
+    final contentHash = _hashText(cube.normalizedContent);
     final duplicate = _findDuplicate(
       fileHash: fileHash,
       contentHash: contentHash,
@@ -368,12 +401,16 @@ class _LutManagerHomeState extends State<LutManagerHome> {
         LutTag(type: LutTagType.captureProfile, value: camera.profile),
         const LutTag(type: LutTagType.function, value: '创意风格'),
         const LutTag(type: LutTagType.style, value: '自定义'),
-        const LutTag(
+        LutTag(
           type: LutTagType.workflow,
-          value: 'Generated in LUT Manager',
+          value: baseRecord == null
+              ? 'Generated in LUT Manager'
+              : 'Modified from existing LUT',
         ),
       ],
-      notes: '由 Flutter 版 HSL 控制生成。下一步接入文件系统后可直接保存 .cube 到同步目录。',
+      notes: baseRecord == null
+          ? '由 Flutter 版 HSL 控制生成。'
+          : '基于 ${baseRecord.name} 叠加 HSL 控制生成。',
       look: _makerLook,
       cloudProvider: 'Local Folder',
       relativePath: '${_slugify(_makerName)}.cube',
@@ -391,7 +428,7 @@ class _LutManagerHomeState extends State<LutManagerHome> {
       _selectedId = record.id;
       _panel = WorkspacePanel.preview;
     });
-    _cubeCache[record.id] = CubeLut.parse(cubeText);
+    _cubeCache[record.id] = cube;
     await _persistLibraryState();
     await _refreshCubePreview();
     _showMessage('已把自定义 LUT 加入库');
@@ -399,7 +436,7 @@ class _LutManagerHomeState extends State<LutManagerHome> {
 
   Future<void> _copyGeneratedCube() async {
     await Clipboard.setData(
-      ClipboardData(text: _generateCubeText(_makerName, _makerLook)),
+      ClipboardData(text: await _generateMakerCubeText()),
     );
     _showMessage('.cube 文本已复制');
   }
@@ -409,15 +446,60 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     final location = await getSaveLocation(suggestedName: fileName);
     if (location == null) return;
 
+    final cubeText = await _generateMakerCubeText();
     final textFile = XFile.fromData(
-      Uint8List.fromList(
-        utf8.encode(_generateCubeText(_makerName, _makerLook)),
-      ),
+      Uint8List.fromList(utf8.encode(cubeText)),
       mimeType: 'text/plain',
       name: fileName,
     );
     await textFile.saveTo(location.path);
     _showMessage('已保存 $fileName');
+  }
+
+  Future<void> _exportGradedReferenceImage(LutImageFormat format) async {
+    final sourceBytes = _referenceImageBytes;
+    if (sourceBytes == null) {
+      _showMessage('请先载入参考照片');
+      return;
+    }
+
+    final record = _selectedRecord;
+    final isMakerExport = _panel == WorkspacePanel.maker;
+    final cube = isMakerExport
+        ? await _loadMakerCube()
+        : await _loadCubeForRecord(record);
+    if (cube == null) {
+      _showMessage('当前 LUT 无法用于导出');
+      return;
+    }
+
+    final extension = format == LutImageFormat.png ? 'png' : 'jpg';
+    final mimeType = format == LutImageFormat.png ? 'image/png' : 'image/jpeg';
+    final exportName = isMakerExport ? _makerName : record.name;
+    final suggestedName = '${_slugify(exportName)}_graded.$extension';
+    final location = await getSaveLocation(suggestedName: suggestedName);
+    if (location == null) return;
+
+    try {
+      _showMessage('正在导出套用 LUT 后的图片...');
+      final bytes = await Future<Uint8List>(
+        () => _imageProcessor.applyCube(
+          sourceBytes: sourceBytes,
+          cube: cube,
+          maxEdge: null,
+          format: format,
+        ),
+      );
+      final imageFile = XFile.fromData(
+        bytes,
+        mimeType: mimeType,
+        name: suggestedName,
+      );
+      await imageFile.saveTo(location.path);
+      _showMessage('已导出 ${format == LutImageFormat.png ? 'PNG' : 'JPEG'} 图片');
+    } catch (_) {
+      _showMessage('图片导出失败，请换一张参考照片或检查保存位置');
+    }
   }
 
   Future<void> _pickReferenceImage() async {
@@ -599,22 +681,29 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     }
 
     final path = _resolveRecordPath(record);
-    if (path.isEmpty) return null;
+    if (path.isEmpty) return _fallbackCubeForRecord(record);
     final file = File(path);
-    if (!await file.exists()) return null;
+    if (!await file.exists()) return _fallbackCubeForRecord(record);
 
     try {
       final cube = CubeLut.parse(await file.readAsString());
       _cubeCache[record.id] = cube;
       return cube;
     } catch (_) {
-      return null;
+      return _fallbackCubeForRecord(record);
     }
+  }
+
+  CubeLut _fallbackCubeForRecord(LutRecord record) {
+    final cube = CubeLut.parse(_generateCubeText(record.name, record.look));
+    _cubeCache[record.id] = cube;
+    return cube;
   }
 
   String _resolveRecordPath(LutRecord record) {
     final path = record.relativePath.trim();
     if (path.isEmpty || File(path).isAbsolute) return path;
+    // Sidecar paths may be relative so cloud folders can move between machines.
     final folderPath = _syncFolderPath;
     if (folderPath == null || folderPath.isEmpty) return path;
     final separator = Platform.pathSeparator;
@@ -625,22 +714,48 @@ class _LutManagerHomeState extends State<LutManagerHome> {
   }
 
   Future<void> _refreshCubePreview() async {
+    final requestId = ++_previewRequestId;
     final sourceBytes = _referenceImageBytes;
-    if (sourceBytes == null ||
-        _records.isEmpty ||
-        _panel == WorkspacePanel.maker) {
+    if (_records.isEmpty) {
       if (mounted) {
         setState(() {
           _gradedReferenceImageBytes = null;
           _gradedRecordId = null;
+          _activeCube = null;
+          _activeCubeRecordId = null;
           _isProcessingPreview = false;
+          _isLoadingCube = false;
         });
       }
       return;
     }
 
     final record = _selectedRecord;
-    final cube = await _loadCubeForRecord(record);
+    final requestedPanel = _panel;
+    setState(() => _isLoadingCube = true);
+    final baseCube = await _loadCubeForRecord(record);
+    if (!mounted ||
+        requestId != _previewRequestId ||
+        _selectedId != record.id ||
+        _panel != requestedPanel) {
+      return;
+    }
+    final cube = requestedPanel == WorkspacePanel.maker
+        ? CubeLut.parse(
+            _generateCubeText(
+              _makerName,
+              _makerLook,
+              baseCube: baseCube,
+              baseTitle: record.name,
+            ),
+          )
+        : baseCube;
+    setState(() {
+      _activeCube = cube;
+      _activeCubeRecordId = record.id;
+      _isLoadingCube = false;
+    });
+
     if (cube == null) {
       if (mounted) {
         setState(() {
@@ -652,12 +767,28 @@ class _LutManagerHomeState extends State<LutManagerHome> {
       return;
     }
 
+    if (sourceBytes == null ||
+        (requestedPanel != WorkspacePanel.preview &&
+            requestedPanel != WorkspacePanel.maker)) {
+      setState(() {
+        _gradedReferenceImageBytes = null;
+        _gradedRecordId = null;
+        _isProcessingPreview = false;
+      });
+      return;
+    }
+
     setState(() => _isProcessingPreview = true);
     try {
       final processed = await Future<Uint8List>(
         () => _imageProcessor.applyCube(sourceBytes: sourceBytes, cube: cube),
       );
-      if (!mounted || _selectedId != record.id) return;
+      if (!mounted ||
+          requestId != _previewRequestId ||
+          _selectedId != record.id ||
+          _panel != requestedPanel) {
+        return;
+      }
       setState(() {
         _gradedReferenceImageBytes = processed;
         _gradedRecordId = record.id;
@@ -1162,11 +1293,35 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     return parts.isEmpty ? '自然 HSL 调整' : parts.join('、');
   }
 
-  String _generateCubeText(String title, LookAdjustment look) {
+  Future<String> _generateMakerCubeText() async {
+    final baseRecord = _makerBaseRecord;
+    final baseCube = baseRecord == null
+        ? null
+        : await _loadCubeForRecord(baseRecord);
+    return _generateCubeText(
+      _makerName,
+      _makerLook,
+      baseCube: baseCube,
+      baseTitle: baseRecord?.name,
+    );
+  }
+
+  Future<CubeLut> _loadMakerCube() async {
+    return CubeLut.parse(await _generateMakerCubeText());
+  }
+
+  String _generateCubeText(
+    String title,
+    LookAdjustment look, {
+    CubeLut? baseCube,
+    String? baseTitle,
+  }) {
     const size = 17;
     final lines = <String>[
       'TITLE "${title.replaceAll('"', "'")}"',
       '# Generated by LUT Manager Flutter prototype',
+      if (baseCube != null && baseTitle != null)
+        '# Base LUT: ${baseTitle.replaceAll('"', "'")}',
       'LUT_3D_SIZE $size',
       'DOMAIN_MIN 0.0 0.0 0.0',
       'DOMAIN_MAX 1.0 1.0 1.0',
@@ -1175,11 +1330,15 @@ class _LutManagerHomeState extends State<LutManagerHome> {
     for (var b = 0; b < size; b += 1) {
       for (var g = 0; g < size; g += 1) {
         for (var r = 0; r < size; r += 1) {
+          final red = r / (size - 1);
+          final green = g / (size - 1);
+          final blue = b / (size - 1);
+          final baseSample = baseCube?.sample(red, green, blue);
           final color = Color.fromARGB(
             255,
-            (255 * r / (size - 1)).round(),
-            (255 * g / (size - 1)).round(),
-            (255 * b / (size - 1)).round(),
+            baseSample?[0] ?? (255 * red).round(),
+            baseSample?[1] ?? (255 * green).round(),
+            baseSample?[2] ?? (255 * blue).round(),
           );
           final graded = gradeColor(color, look);
           lines.add(
@@ -1593,11 +1752,15 @@ class _WorkspacePane extends StatelessWidget {
     required this.panel,
     required this.split,
     required this.makerLook,
+    required this.makerBaseName,
     required this.referenceImageBytes,
     required this.gradedReferenceImageBytes,
+    required this.activeCube,
     required this.isProcessingPreview,
+    required this.isLoadingCube,
     required this.onPickReferenceImage,
     required this.onImportCube,
+    required this.onExportImage,
     required this.onPanelChanged,
     required this.onSplitChanged,
   });
@@ -1606,11 +1769,15 @@ class _WorkspacePane extends StatelessWidget {
   final WorkspacePanel panel;
   final double split;
   final LookAdjustment makerLook;
+  final String? makerBaseName;
   final Uint8List? referenceImageBytes;
   final Uint8List? gradedReferenceImageBytes;
+  final CubeLut? activeCube;
   final bool isProcessingPreview;
+  final bool isLoadingCube;
   final VoidCallback onPickReferenceImage;
   final VoidCallback onImportCube;
+  final ValueChanged<LutImageFormat> onExportImage;
   final ValueChanged<WorkspacePanel> onPanelChanged;
   final ValueChanged<double> onSplitChanged;
 
@@ -1618,6 +1785,7 @@ class _WorkspacePane extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final activeLook = panel == WorkspacePanel.maker ? makerLook : record.look;
+    final makerPanelLabel = makerBaseName == null ? '生成 LUT' : '在 LUT 基础上修改';
     final compact = MediaQuery.sizeOf(context).width < 760;
     final titleBlock = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1653,6 +1821,16 @@ class _WorkspacePane extends StatelessWidget {
           icon: const Icon(Icons.upload_file),
           label: const Text('导入 .cube'),
         ),
+        PopupMenuButton<LutImageFormat>(
+          enabled: referenceImageBytes != null,
+          tooltip: '导出套用 LUT 后的图片',
+          onSelected: onExportImage,
+          itemBuilder: (context) => const [
+            PopupMenuItem(value: LutImageFormat.png, child: Text('导出 PNG')),
+            PopupMenuItem(value: LutImageFormat.jpeg, child: Text('导出 JPEG')),
+          ],
+          icon: const Icon(Icons.ios_share),
+        ),
       ],
     );
     return Padding(
@@ -1686,21 +1864,26 @@ class _WorkspacePane extends StatelessWidget {
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         SegmentedButton<WorkspacePanel>(
-                          segments: const [
-                            ButtonSegment(
+                          segments: [
+                            const ButtonSegment(
                               value: WorkspacePanel.preview,
                               icon: Icon(Icons.compare),
                               label: Text('预览'),
                             ),
-                            ButtonSegment(
+                            const ButtonSegment(
+                              value: WorkspacePanel.lutView,
+                              icon: Icon(Icons.view_in_ar),
+                              label: Text('LUT 查看'),
+                            ),
+                            const ButtonSegment(
                               value: WorkspacePanel.metadata,
                               icon: Icon(Icons.data_object),
                               label: Text('元数据'),
                             ),
                             ButtonSegment(
                               value: WorkspacePanel.maker,
-                              icon: Icon(Icons.tune),
-                              label: Text('生成 LUT'),
+                              icon: const Icon(Icons.tune),
+                              label: Text(makerPanelLabel),
                             ),
                           ],
                           selected: {panel},
@@ -1725,46 +1908,55 @@ class _WorkspacePane extends StatelessWidget {
                   Expanded(
                     child: Padding(
                       padding: const EdgeInsets.all(18),
-                      child: Column(
-                        children: [
-                          Expanded(
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: _PreviewCanvas(
-                                referenceImageBytes: referenceImageBytes,
-                                gradedReferenceImageBytes:
-                                    gradedReferenceImageBytes,
-                                isProcessingPreview: isProcessingPreview,
-                                painter: _ReferencePreviewPainter(
-                                  look: activeLook,
-                                  split: split,
-                                  isDark: theme.brightness == Brightness.dark,
+                      child: panel == WorkspacePanel.lutView
+                          ? _LutImpactPanel(
+                              cube: activeCube,
+                              isLoading: isLoadingCube,
+                            )
+                          : Column(
+                              children: [
+                                Expanded(
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: _PreviewCanvas(
+                                      referenceImageBytes: referenceImageBytes,
+                                      gradedReferenceImageBytes:
+                                          gradedReferenceImageBytes,
+                                      isProcessingPreview: isProcessingPreview,
+                                      painter: _ReferencePreviewPainter(
+                                        look: activeLook,
+                                        split: split,
+                                        isDark:
+                                            theme.brightness == Brightness.dark,
+                                      ),
+                                      look: activeLook,
+                                      split: split,
+                                    ),
+                                  ),
                                 ),
-                                look: activeLook,
-                                split: split,
-                              ),
+                                const SizedBox(height: 14),
+                                Row(
+                                  children: [
+                                    Text(
+                                      'Before',
+                                      style: theme.textTheme.labelMedium,
+                                    ),
+                                    Expanded(
+                                      child: Slider(
+                                        value: split,
+                                        onChanged: onSplitChanged,
+                                        min: 0.05,
+                                        max: 0.95,
+                                      ),
+                                    ),
+                                    Text(
+                                      'After',
+                                      style: theme.textTheme.labelMedium,
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
-                          ),
-                          const SizedBox(height: 14),
-                          Row(
-                            children: [
-                              Text(
-                                'Before',
-                                style: theme.textTheme.labelMedium,
-                              ),
-                              Expanded(
-                                child: Slider(
-                                  value: split,
-                                  onChanged: onSplitChanged,
-                                  min: 0.05,
-                                  max: 0.95,
-                                ),
-                              ),
-                              Text('After', style: theme.textTheme.labelMedium),
-                            ],
-                          ),
-                        ],
-                      ),
                     ),
                   ),
                 ],
@@ -1784,6 +1976,7 @@ class _InspectorPane extends StatelessWidget {
     required this.makerLook,
     required this.makerName,
     required this.makerCamera,
+    required this.makerBaseName,
     required this.onMakerLookChanged,
     required this.onMakerNameChanged,
     required this.onMakerCameraChanged,
@@ -1801,6 +1994,7 @@ class _InspectorPane extends StatelessWidget {
   final LookAdjustment makerLook;
   final String makerName;
   final String makerCamera;
+  final String? makerBaseName;
   final ValueChanged<LookAdjustment> onMakerLookChanged;
   final ValueChanged<String> onMakerNameChanged;
   final ValueChanged<String> onMakerCameraChanged;
@@ -1831,6 +2025,7 @@ class _InspectorPane extends StatelessWidget {
           look: makerLook,
           makerName: makerName,
           makerCamera: makerCamera,
+          baseName: makerBaseName,
           onLookChanged: onMakerLookChanged,
           onNameChanged: onMakerNameChanged,
           onCameraChanged: onMakerCameraChanged,
@@ -2168,6 +2363,7 @@ class _MakerPanel extends StatelessWidget {
     required this.look,
     required this.makerName,
     required this.makerCamera,
+    required this.baseName,
     required this.onLookChanged,
     required this.onNameChanged,
     required this.onCameraChanged,
@@ -2179,6 +2375,7 @@ class _MakerPanel extends StatelessWidget {
   final LookAdjustment look;
   final String makerName;
   final String makerCamera;
+  final String? baseName;
   final ValueChanged<LookAdjustment> onLookChanged;
   final ValueChanged<String> onNameChanged;
   final ValueChanged<String> onCameraChanged;
@@ -2189,15 +2386,23 @@ class _MakerPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final activeBaseName = baseName;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '自定义 LUT',
+          activeBaseName == null ? '自定义 LUT' : '在 LUT 基础上修改',
           style: theme.textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.w800,
           ),
         ),
+        if (activeBaseName != null) ...[
+          const SizedBox(height: 8),
+          Chip(
+            avatar: const Icon(Icons.layers_outlined, size: 16),
+            label: Text('基础 LUT：$activeBaseName'),
+          ),
+        ],
         const SizedBox(height: 12),
         TextFormField(
           initialValue: makerName,
@@ -2313,6 +2518,276 @@ class _MakerPanel extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+class _LutImpactPanel extends StatelessWidget {
+  const _LutImpactPanel({required this.cube, required this.isLoading});
+
+  final CubeLut? cube;
+  final bool isLoading;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final activeCube = cube;
+    if (isLoading) {
+      return const Center(
+        child: SizedBox(
+          width: 30,
+          height: 30,
+          child: CircularProgressIndicator(strokeWidth: 3),
+        ),
+      );
+    }
+    if (activeCube == null) {
+      return Center(
+        child: Text('当前 LUT 无法生成可视化', style: theme.textTheme.bodyMedium),
+      );
+    }
+
+    final stats = _LutImpactStats.fromCube(activeCube);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainer,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: theme.colorScheme.outline),
+            ),
+            child: CustomPaint(
+              painter: _LutImpactPainter(
+                cube: activeCube,
+                isDark: theme.brightness == Brightness.dark,
+              ),
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _DeltaMetric(label: '平均 ΔR', value: stats.redDelta),
+            _DeltaMetric(label: '平均 ΔG', value: stats.greenDelta),
+            _DeltaMetric(label: '平均 ΔB', value: stats.blueDelta),
+            _DeltaMetric(label: '最大偏移', value: stats.maxShift),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _DeltaMetric extends StatelessWidget {
+  const _DeltaMetric({required this.label, required this.value});
+
+  final String label;
+  final double value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final normalized = value.clamp(-1.0, 1.0).toDouble();
+    final color = normalized >= 0 ? Colors.greenAccent : Colors.redAccent;
+    return SizedBox(
+      width: 132,
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 6),
+              LinearProgressIndicator(
+                value: normalized.abs(),
+                minHeight: 5,
+                color: color,
+                backgroundColor: theme.colorScheme.surfaceContainerHigh,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '${normalized >= 0 ? '+' : ''}${(normalized * 100).round()}',
+                style: theme.textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LutImpactStats {
+  const _LutImpactStats({
+    required this.redDelta,
+    required this.greenDelta,
+    required this.blueDelta,
+    required this.maxShift,
+  });
+
+  final double redDelta;
+  final double greenDelta;
+  final double blueDelta;
+  final double maxShift;
+
+  factory _LutImpactStats.fromCube(CubeLut cube) {
+    const steps = 5;
+    var redTotal = 0.0;
+    var greenTotal = 0.0;
+    var blueTotal = 0.0;
+    var maxShift = 0.0;
+    var count = 0;
+    for (var r = 0; r < steps; r++) {
+      for (var g = 0; g < steps; g++) {
+        for (var b = 0; b < steps; b++) {
+          final inputR = r / (steps - 1);
+          final inputG = g / (steps - 1);
+          final inputB = b / (steps - 1);
+          final output = cube.sample(inputR, inputG, inputB);
+          final dr = output[0] / 255 - inputR;
+          final dg = output[1] / 255 - inputG;
+          final db = output[2] / 255 - inputB;
+          redTotal += dr;
+          greenTotal += dg;
+          blueTotal += db;
+          maxShift = math.max(maxShift, math.sqrt(dr * dr + dg * dg + db * db));
+          count += 1;
+        }
+      }
+    }
+    return _LutImpactStats(
+      redDelta: redTotal / count,
+      greenDelta: greenTotal / count,
+      blueDelta: blueTotal / count,
+      maxShift: maxShift,
+    );
+  }
+}
+
+class _LutImpactPainter extends CustomPainter {
+  const _LutImpactPainter({required this.cube, required this.isDark});
+
+  final CubeLut cube;
+  final bool isDark;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final axisPaint = Paint()
+      ..color = (isDark ? Colors.white : Colors.black).withValues(alpha: 0.18)
+      ..strokeWidth = 1.2;
+    final labelStyle = TextStyle(
+      color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.68),
+      fontSize: 12,
+      fontWeight: FontWeight.w800,
+    );
+
+    Offset project(double red, double green, double blue) {
+      final scale = math.min(size.width, size.height) * 0.58;
+      final center = Offset(size.width * 0.5, size.height * 0.62);
+      final x = (red - blue) * scale * 0.62;
+      final y = ((red + blue) * 0.34 - green * 0.82) * scale;
+      return center + Offset(x, y);
+    }
+
+    final corners = <({double r, double g, double b})>[
+      (r: 0, g: 0, b: 0),
+      (r: 1, g: 0, b: 0),
+      (r: 0, g: 1, b: 0),
+      (r: 1, g: 1, b: 0),
+      (r: 0, g: 0, b: 1),
+      (r: 1, g: 0, b: 1),
+      (r: 0, g: 1, b: 1),
+      (r: 1, g: 1, b: 1),
+    ];
+    bool differsByOne(int a, int b) {
+      final ca = corners[a];
+      final cb = corners[b];
+      return ((ca.r - cb.r).abs() +
+              (ca.g - cb.g).abs() +
+              (ca.b - cb.b).abs()) ==
+          1;
+    }
+
+    for (var a = 0; a < corners.length; a++) {
+      for (var b = a + 1; b < corners.length; b++) {
+        if (!differsByOne(a, b)) continue;
+        final start = corners[a];
+        final end = corners[b];
+        canvas.drawLine(
+          project(start.r, start.g, start.b),
+          project(end.r, end.g, end.b),
+          axisPaint,
+        );
+      }
+    }
+
+    void label(String text, Offset offset) {
+      final painter = TextPainter(
+        text: TextSpan(text: text, style: labelStyle),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      painter.paint(canvas, offset);
+    }
+
+    label('R+', project(1, 0, 0) + const Offset(10, -6));
+    label('G+', project(0, 1, 0) + const Offset(-8, -22));
+    label('B+', project(0, 0, 1) + const Offset(-28, -6));
+
+    const steps = 5;
+    for (var r = 0; r < steps; r++) {
+      for (var g = 0; g < steps; g++) {
+        for (var b = 0; b < steps; b++) {
+          final inputR = r / (steps - 1);
+          final inputG = g / (steps - 1);
+          final inputB = b / (steps - 1);
+          final output = cube.sample(inputR, inputG, inputB);
+          final outputR = output[0] / 255;
+          final outputG = output[1] / 255;
+          final outputB = output[2] / 255;
+          final start = project(inputR, inputG, inputB);
+          final end = project(outputR, outputG, outputB);
+          final color = Color.fromARGB(255, output[0], output[1], output[2]);
+          final shift = (end - start).distance;
+          final linePaint = Paint()
+            ..color = color.withValues(alpha: shift < 1 ? 0.22 : 0.62)
+            ..strokeWidth = shift < 1 ? 1 : 1.6
+            ..strokeCap = StrokeCap.round;
+          canvas.drawLine(start, end, linePaint);
+          canvas.drawCircle(
+            end,
+            2.5,
+            Paint()
+              ..color = color
+              ..style = PaintingStyle.fill,
+          );
+          canvas.drawCircle(
+            start,
+            1.6,
+            Paint()
+              ..color = (isDark ? Colors.white : Colors.black).withValues(
+                alpha: 0.2,
+              ),
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _LutImpactPainter oldDelegate) {
+    return oldDelegate.cube != cube || oldDelegate.isDark != isDark;
   }
 }
 

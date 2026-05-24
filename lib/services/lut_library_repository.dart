@@ -17,6 +17,8 @@ class LutLibraryRepository {
   static const _libraryFileName = 'lut-manager-library.json';
   static const sidecarFileName = '.lutmanager.json';
 
+  // The local app-support file is the app's source of truth between launches.
+  // If a sync folder is selected, the same records are mirrored into the sidecar.
   Future<LutLibraryState> loadLibraryState() async {
     try {
       final file = await _libraryFile();
@@ -53,6 +55,7 @@ class LutLibraryRepository {
   }
 
   Future<void> saveSidecar(String folderPath, List<LutRecord> records) async {
+    // Sidecars describe LUTs without touching the original .cube files.
     final file = File(_sidecarPath(folderPath));
     await file.parent.create(recursive: true);
     await file.writeAsString(_encodeRecords(records));

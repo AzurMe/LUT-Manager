@@ -17,6 +17,8 @@ Implemented in `lib/`:
 - Native file dialogs via Flutter's `file_selector` package.
 - Reference image loading for preview comparison.
 - `.cube` file import with 3D LUT validation and real LUT application on reference photos.
+- Export of the current reference image with the selected LUT applied as PNG or JPEG.
+- LUT impact viewer with a projected RGB cube and channel-shift metrics.
 - Duplicate LUT detection using exact file SHA-256 and normalized LUT content SHA-256.
 - `.cube` export through native save dialogs.
 - Automatic local library persistence between launches.
@@ -24,6 +26,7 @@ Implemented in `lib/`:
 - Editable metadata and typed Tag UI, plus raw sidecar JSON editing.
 - Metadata JSON import/export for manual bundle workflows.
 - HSL-style custom LUT controls.
+- Existing LUTs can be used as the base for HSL-style secondary adjustments.
 - Generated `.cube` text copy and custom LUT creation inside the in-memory library.
 
 ## Tag System
@@ -96,6 +99,7 @@ Duplicate detection fields are stored with each record:
 - `docs/tag-taxonomy.md` - typed tag taxonomy
 - `docs/project-root-guide.md` - root files and Flutter build output guide
 - `docs/camera-tag-catalog.md` - camera brand/model Tag catalog sources
+- `docs/engineering-handoff-v1.md` - first-stage engineering handoff
 
 ## Planned Native Modules
 

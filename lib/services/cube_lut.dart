@@ -63,6 +63,8 @@ class CubeLut {
   }
 
   static String _normalize(int size, List<double> values) {
+    // Normalized content feeds duplicate detection, so ignore title/comments
+    // and pin numeric precision before hashing.
     final buffer = StringBuffer('LUT_3D_SIZE $size\n');
     for (var index = 0; index < values.length; index += 3) {
       buffer
@@ -76,6 +78,7 @@ class CubeLut {
   }
 
   List<int> sample(double red, double green, double blue) {
+    // .cube 3D data is written with red changing fastest, then green, then blue.
     final max = size - 1;
     final rf = red.clamp(0, 1).toDouble() * max;
     final gf = green.clamp(0, 1).toDouble() * max;
